@@ -1,0 +1,11 @@
+{
+  "target": "lab-vsrx",
+  "must_find": ["CDE-ANY-OUT", "REMOTE-ADMIN-SSH", "baseline-permit"],
+  "must_find_concepts": {
+    "no logged default-deny on CDE zone-pairs": ["default-deny", "default deny", "deny-all", "deny all", "explicit deny", "implicit deny"]
+  },
+  "soft": ["CDE-OUT-WEB-UPDATES"],
+  "must_not_flag": ["CDE-OUT-DNS"],
+  "forbidden_phrases": ["is pci compliant", "is pci-compliant", "are pci compliant", "environment is compliant", "fully compliant"],
+  "read_tools": ["get_device_list", "get_router_list", "gather_device_facts", "get_junos_config", "junos_config_diff"]
+}

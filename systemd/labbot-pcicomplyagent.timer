@@ -1,0 +1,10 @@
+[Unit]
+Description=labbots: pcicomplyagent report
+
+[Timer]
+OnCalendar=Mon *-*-* 07:45:00
+Persistent=true
+Unit=labbot@pcicomplyagent.service
+
+[Install]
+WantedBy=timers.target
