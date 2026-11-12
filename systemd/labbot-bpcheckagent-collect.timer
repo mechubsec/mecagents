@@ -1,0 +1,10 @@
+[Unit]
+Description=labbots: bpcheckagent collect (best-practice audit by a local model)
+
+[Timer]
+OnCalendar=Sun *-*-* 22:30:00
+Persistent=true
+Unit=labbot@bpcheckagent.collect.service
+
+[Install]
+WantedBy=timers.target

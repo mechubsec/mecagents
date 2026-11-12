@@ -1,0 +1,10 @@
+[Unit]
+Description=labbots: bpcheckagent report
+
+[Timer]
+OnCalendar=Mon *-*-* 07:50:00
+Persistent=true
+Unit=labbot@bpcheckagent.service
+
+[Install]
+WantedBy=timers.target
