@@ -16,10 +16,5 @@ New agents, new optional variables and tighter checks are minor; fixes and docs 
 
 ## Required mecbots
 
-0.1.0 needs **mecbots main at the time of this release**. mecbots is getting a `VERSION` file; this section will
-then name a minimum version. Two things mecagents relies on are not in that mecbots yet:
-
-- `socbot` writing the escalation queue that `socagent` reads;
-- the runner scrubbing Discord text and keeping full reports locally.
-
-The other three agents run without them; socagent has nothing to investigate until the queue exists.
+mecagents 0.1.0 needs **mecbots 0.2.0 or later**. From 0.2.0 mecbots has the socbot escalation queue that
+`socagent` reads and a runner that scrubs Discord text and keeps full reports local.

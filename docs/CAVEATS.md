@@ -25,7 +25,7 @@
   model and writes the state file (and, for driftagent, may record a golden). Only the post is skipped.
 - **Never run an agent with a write-capable token.** The token's scope is the real barrier; the prompt's
   "read only" is not.
-- **Discord is a cloud service.** Reports name devices and rules. The mecbots runner can scrub Discord text and
-  keep full reports local; mecbots main at this release does not yet do this (see VERSIONING), so check what your
-  runner posts before pointing agents at a shared server.
+- **Discord is a cloud service.** Reports name devices and rules. The mecbots runner (0.2.0 or later, which
+  this release needs) scrubs Discord text and keeps full reports local; check its redact list covers your
+  devices before pointing agents at a shared server.
 - **Do not put a self-hosted CI runner on a repo that may go public.** A pull request can run code on it.

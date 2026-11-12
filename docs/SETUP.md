@@ -78,7 +78,7 @@ Expected: `['tool_search', 'tool_describe', 'tool_call']`. Anything else raises.
 
 ## 5. Discord identity
 
-One Discord application per agent, as for any bot (mecbots README, "Discord setup, per bot"): View Channels and
+One Discord application per agent, as for any bot (mecbots `docs/SETUP.md`, "Discord, per bot"): View Channels and
 Send Messages only, then `hermes -p pcicomplyagent gateway setup`. The runner posts with `hermes -p <agent> send`,
 so the profile name must equal the agent name; this is why the model profile and the Discord identity are the
 same profile (its `discord` toolset is empty, so the model cannot post). Set `LABBOTS_TARGET` as for mecbots.

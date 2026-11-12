@@ -7,8 +7,8 @@ Investigates what `socbot` escalated, using read-only SSDF event-store tools. At
 `socbot` (in [mecbots](https://github.com/mechubsec/mecbots), not copied here) writes a queue file,
 `~/.local/state/labbots/socbot-escalations.json`, shaped `{at, items: [{id, kind, summary, facts}]}` with `kind`
 one of `new-high-alert`, `deny-spike`, `firewall-quiet`. socagent reads it. A missing, empty or older-than-20-hours
-queue means "nothing escalated" and no model runs. **mecbots main at the time of this release does not write this
-queue yet**, so socagent has nothing to read until it does; see [VERSIONING](../VERSIONING.md).
+queue means "nothing escalated" and no model runs. mecbots 0.2.0 or later writes
+this queue; see [VERSIONING](../VERSIONING.md).
 
 ## Uses
 
