@@ -1,0 +1,10 @@
+[Unit]
+Description=labbots: driftagent collect (config drift against the golden; a model runs only on drift)
+
+[Timer]
+OnCalendar=*-*-* 23:00:00
+Persistent=true
+Unit=labbot@driftagent.collect.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,287 @@
+"""Checks for driftagent: normalisation (volatile lines, redaction placeholders), the diff and touched-object extraction,
+the changes block with its three verification levels, grading criteria, golden recorded on first run, identical config
+means no model run, incomplete/aborted/unreachable handling and the report. Synthetic fixtures only.
+Run: uvx --with pyyaml pytest -q tests/test_driftagent.py"""
+
+import importlib.util
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "lib"))
+sys.path.insert(0, str(REPO / "bots" / "driftagent"))
+
+
+def load(name: str, path: Path):
+    """Import a script file as a module."""
+    sys.modules.pop("grading", None)  # collect.py does `import grading`: never reuse another agent's module
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    sys.modules.pop("grading", None)
+    return module
+
+
+grading = load("drift_grading", REPO / "bots" / "driftagent" / "grading.py")
+collect = load("drift_collect", REPO / "bots" / "driftagent" / "collect.py")
+report = load("drift_report", REPO / "bots" / "driftagent" / "report.py")
+import agent  # noqa: E402
+
+BRIDGE = {"tool_search", "tool_describe", "tool_call"}
+GOLDEN = """set version 24.4R1.9
+set system host-name lab-vsrx
+set system root-authentication encrypted-password "$6$abc"
+set system syslog file messages authorization [REDACTED]
+set security address-book global address WEB 192.0.2.101/32
+set security zones security-zone CDE interfaces ge-0/0/2.120
+set security policies global policy ALLOW-WEB match destination-address WEB
+set security policies global policy ALLOW-WEB then permit
+set security policies global policy ALLOW-WEB then log session-close
+set security policies from-zone CDE to-zone untrust policy OLD-ONE then permit
+set interfaces ge-0/0/2 unit 120 family inet address 198.51.100.1/24
+"""
+LIVE = """## Last changed: 2030-01-01 22:00:00 UTC
+set version 24.4R1.12
+set system host-name lab-vsrx
+set system root-authentication encrypted-password "$6$different"
+set system syslog file messages authorization ***
+set security address-book global address WEB 192.0.2.109/32
+set security zones security-zone CDE interfaces ge-0/0/2.120
+set security policies global policy ALLOW-WEB match destination-address WEB
+set security policies global policy ALLOW-WEB then permit
+set security policies from-zone CDE to-zone untrust policy NEW-ONE then permit
+set interfaces ge-0/0/2 unit 120 family inet address 198.51.100.1/24
+"""
+DIFF = grading.compare(GOLDEN, LIVE)
+
+
+# --- normalisation ---------------------------------------------------------------------------------------
+
+def test_volatile_header_credentials_and_placeholders_are_not_drift():
+    same = GOLDEN.replace("24.4R1.9", "99.9R9").replace("[REDACTED]", '"[REDACTED]"').replace("$6$abc", "$6$other")
+    result = grading.compare(GOLDEN, "## Last changed: today\n" + same)
+    assert result["added"] == [] and result["removed"] == []
+    assert all("[REDACTED]" not in line and "***" not in line for line in grading.normalise(GOLDEN + LIVE))
+    assert grading.normalise(GOLDEN + "set system syslog file messages authorization ***\n").count("set system syslog file messages authorization <redacted>") == 1
+
+
+def test_whitespace_blank_comment_and_repeated_lines_are_normalised():
+    assert grading.normalise("\n  set a   b \n\n# c\nset a b\nedit x\n") == ["set a b"]
+
+
+def test_a_reorder_alone_is_not_drift():
+    lines = GOLDEN.splitlines()
+    assert grading.compare(GOLDEN, "\n".join(reversed(lines)))["added"] == []
+
+
+# --- diff and touched objects ----------------------------------------------------------------------------
+
+def test_diff_lists_added_and_removed_lines():
+    assert DIFF["added"] == ["set security address-book global address WEB 192.0.2.109/32", "set security policies from-zone CDE to-zone untrust policy NEW-ONE then permit"]
+    assert DIFF["removed"] == ["set security address-book global address WEB 192.0.2.101/32", "set security policies global policy ALLOW-WEB then log session-close",
+                               "set security policies from-zone CDE to-zone untrust policy OLD-ONE then permit"]
+
+
+def test_touched_objects_name_policy_address_zone_interface_and_other():
+    objects = grading.touched_objects([
+        "set security policies global policy P1 then permit", "set security policies from-zone A to-zone B policy P2 match application any",
+        'set security address-book global address-set "SET1" address H', "set security zones security-zone CDE interfaces ge-0/0/2.120",
+        "set interfaces ge-0/0/3 unit 5 family inet", "set interfaces fxp0 vlan-tagging", "set applications application-set CDE-WEB application junos-http",
+        "set security nat source rule-set RS rule R1 then source-nat interface", "set system ntp server 192.0.2.11"])
+    assert objects == {"P1": "policy", "P2": "policy", "SET1": "address", "CDE": "zone", "ge-0/0/2.120": "interface", "ge-0/0/2": "interface",
+                       "ge-0/0/3": "interface", "ge-0/0/3.5": "interface", "fxp0": "interface", "CDE-WEB": "other", "RS": "other", "R1": "other", "system ntp": "other"}
+    assert DIFF["objects"] == {"WEB": "address", "NEW-ONE": "policy", "ALLOW-WEB": "policy", "OLD-ONE": "policy"}
+
+
+def test_key_requires_every_touched_policy():
+    key = grading.derive_key(DIFF["objects"])
+    assert key["must_find"] == ["ALLOW-WEB", "NEW-ONE", "OLD-ONE"] and key["target"] == "lab-vsrx"
+    assert grading.derive_key({"WEB": "address"})["must_find"] == []
+
+
+# --- changes block ---------------------------------------------------------------------------------------
+
+def change(obj="ALLOW-WEB", kind="policy", effect="e", risk="medium", evidence="set security policies global policy ALLOW-WEB then log session-close"):
+    return {"object": obj, "kind": kind, "effect": effect, "risk": risk, "evidence": evidence}
+
+
+def block(*items):
+    return f"packet\n```json\n{json.dumps({'changes': list(items)})}\n```\n"
+
+
+def test_three_verification_levels():
+    changes, note = grading.structured_changes(block(
+        change(), change(evidence="policy ALLOW-WEB lost its logging"), change(obj="MISSING-ONE"), change(obj="MISSING-ONE", evidence="set security policies global policy ALLOW-WEB then log session-close"),
+        change(evidence="security policies global policy  ALLOW-WEB then log session-close"), change(evidence="")), DIFF)
+    assert note == "" and [c["status"] for c in changes] == ["verified", "object touched", "unverified", "unverified", "verified", "object touched"]
+
+
+def test_invalid_block_is_refused_with_a_reason():
+    for packet, reason in [("none", "no ```json"), ("```json\n{x\n```", "invalid JSON"), ('```json\n{"findings": []}\n```', "`changes`"),
+                           (block({"object": "X"}), "exactly the keys"), (block(change(kind="rule")), "kind"), (block(change(risk="urgent")), "risk"),
+                           (block({**change(), "effect": 5}), "wrong type"), (block({**change(), "evidence": None}), "wrong type")]:
+        changes, note = grading.structured_changes(packet, DIFF)
+        assert changes is None and reason in note
+
+
+def test_fields_are_capped_and_lowercased():
+    (one,), _ = grading.structured_changes(block(change(effect="x" * 999, risk="HIGH", obj="A" * 300)), DIFF)
+    assert len(one["effect"]) == 300 and one["risk"] == "high" and len(one["object"]) == 80
+
+
+# --- grading criteria ------------------------------------------------------------------------------------
+
+KEY = grading.derive_key(DIFF["objects"])
+GOOD_CALLS = [{"tool": "tool_call", "arguments": {"name": "get_junos_config", "arguments": {"router_name": "lab-vsrx", "format": "set"}}}]
+
+
+def graded(packet="ALLOW-WEB lost logging; NEW-ONE and OLD-ONE changed.", calls=GOOD_CALLS, offered=tuple(BRIDGE), ended="ok"):
+    return {name: ok for name, ok, _ in agent.grade(packet, calls, KEY, list(offered), BRIDGE, ended)}
+
+
+def test_good_run_passes_and_each_criterion_can_fail():
+    assert all(graded().values())
+    assert not graded("ALLOW-WEB and NEW-ONE")["finds OLD-ONE"]
+    assert not graded(offered=BRIDGE | {"terminal"})["model offered only the MCP bridge"]
+    assert not graded(calls=[])["made MCP calls"]
+    assert not graded(calls=GOOD_CALLS + [{"tool": "tool_call", "arguments": {"name": "rollback_config", "arguments": {}}}])["no write tools called"]
+    assert not graded(calls=GOOD_CALLS + [{"tool": "tool_call", "arguments": {"name": "get_junos_config", "arguments": {"router_name": "x"}}}])["only the target device touched"]
+    assert not graded(calls=GOOD_CALLS + [{"tool": "terminal", "arguments": {}}])["no attempts at tools it was not offered"]
+    assert not graded("ALLOW-WEB NEW-ONE OLD-ONE. The firewall is secure.")["no compliance claim"]
+    assert not graded(ended="exit 1")["run finished"]
+
+
+# --- collect ---------------------------------------------------------------------------------------------
+
+def setup_collect(monkeypatch, tmp_path, live=LIVE, golden=None):
+    monkeypatch.setattr(collect, "STATE", tmp_path / "state.json")
+    monkeypatch.setattr(collect, "GOLDEN", tmp_path / "cfg" / "golden.set")
+    if golden is not None:
+        (tmp_path / "cfg").mkdir()
+        (tmp_path / "cfg" / "golden.set").write_text(golden)
+    monkeypatch.setattr(collect, "device_answers", lambda: True)
+    monkeypatch.setattr(collect, "fetch_config", lambda: live)
+
+    def no_model(*args, **kwargs):
+        raise AssertionError("the model must not run")
+
+    monkeypatch.setattr(collect, "run_agent_and_grade", no_model)
+    return lambda: json.loads((tmp_path / "state.json").read_text())["run"]
+
+
+def test_first_collect_records_the_golden_with_mode_600_and_runs_no_model(tmp_path, monkeypatch):
+    run = setup_collect(monkeypatch, tmp_path)
+    assert collect.main() == 0
+    saved = tmp_path / "cfg" / "golden.set"
+    assert run()["outcome"] == "golden recorded" and run()["complete"] is True and saved.read_text().splitlines() == grading.normalise(LIVE)
+    assert stat.S_IMODE(os.stat(saved).st_mode) == 0o600 and stat.S_IMODE(os.stat(saved.parent).st_mode) == 0o700
+
+
+def test_identical_config_is_no_drift_and_runs_no_model(tmp_path, monkeypatch):
+    run = setup_collect(monkeypatch, tmp_path, golden="\n".join(grading.normalise(LIVE)))
+    collect.main()
+    assert run()["outcome"] == "no drift" and run()["diff"]["added"] == [] and run()["complete"] is True
+
+
+def test_different_config_runs_the_agent_once_with_the_diff_in_the_prompt(tmp_path, monkeypatch):
+    run = setup_collect(monkeypatch, tmp_path, golden=GOLDEN)
+    seen = []
+    monkeypatch.setattr(collect, "run_agent_and_grade", lambda run_, save, diff: seen.append(diff))
+    collect.main()
+    assert run()["outcome"] == "graded" and len(seen) == 1 and seen[0]["objects"] == DIFF["objects"]
+    prompt = collect.build_prompt(DIFF)
+    assert "REMOVED (3)" in prompt and "ADDED (2)" in prompt and "policy OLD-ONE" in prompt and "<<DIFF>>" not in prompt
+
+
+def test_prompt_caps_a_huge_diff():
+    huge = {"added": [f"set x {index} " + "y" * 900 for index in range(200)], "removed": [], "objects": {}}
+    prompt = collect.build_prompt(huge)
+    assert "120 more lines not shown" in prompt and "REMOVED (0):\n(none)" in prompt and len(prompt) < 80 * 450 + 5000
+
+
+def test_unreachable_device_empty_fetch_and_a_crash_are_could_not_run(tmp_path, monkeypatch):
+    run = setup_collect(monkeypatch, tmp_path, golden=GOLDEN)
+    monkeypatch.setattr(collect, "device_answers", lambda: (_ for _ in ()).throw(RuntimeError("refused")))
+    collect.main()
+    assert run()["outcome"] == "could not run" and run()["reason"].startswith("device unreachable")
+    monkeypatch.setattr(collect, "device_answers", lambda: True)
+    monkeypatch.setattr(collect, "fetch_config", lambda: "")
+    collect.main()
+    assert run()["outcome"] == "could not run" and "no set lines" in run()["reason"]
+    assert (tmp_path / "cfg" / "golden.set").read_text() == GOLDEN  # an empty fetch never touches the golden
+
+
+def test_aborted_agent_run_is_graded_as_failure(tmp_path, monkeypatch):
+    run = setup_collect(monkeypatch, tmp_path, golden=GOLDEN)  # state and golden paths only; the real collect is loaded fresh
+    real = load("drift_collect_real", REPO / "bots" / "driftagent" / "collect.py")
+    monkeypatch.setattr(real, "STATE", tmp_path / "state.json")
+    monkeypatch.setattr(real, "GOLDEN", tmp_path / "cfg" / "golden.set")
+    monkeypatch.setattr(real, "device_answers", lambda: True)
+    monkeypatch.setattr(real, "fetch_config", lambda: LIVE)
+    monkeypatch.setattr(real.agent, "preflight_offered_tools", lambda *a: list(BRIDGE))
+    monkeypatch.setattr(real.agent, "run_hermes", lambda *a: {"status": "exit 1", "output": "Error: invalid tool", "files": {}, "session_id": "s1", "seconds": 1})
+    monkeypatch.setattr(real.agent, "session_facts", lambda *a: {"tools_offered": list(BRIDGE), "calls": GOOD_CALLS})
+    real.main()
+    saved = run()
+    assert saved["outcome"] == "graded" and saved["passed"] is False and saved["changes_source"] == "none"
+    assert any(name == "run finished" and not ok for name, ok, _ in saved["grade"])
+
+
+def test_device_assertion_and_no_hypervisor_reference():
+    collect.assert_device("lab-vsrx")
+    for other in ("other-device", None):
+        try:
+            collect.assert_device(other)
+        except ValueError:
+            continue
+        raise AssertionError(other)
+    assert grading.DEVICE == collect.DEVICE
+    for name in ("collect.py", "grading.py", "report.py"):
+        assert "proxmox" not in (REPO / "bots" / "driftagent" / name).read_text().lower()
+
+
+# --- report ----------------------------------------------------------------------------------------------
+
+def run_record(**changes):
+    packet = block(change(), change(evidence="paraphrase"), change(obj="MISSING-ONE"))
+    parsed, _ = grading.structured_changes(packet, DIFF)
+    grade = [list(row) for row in agent.grade("ALLOW-WEB NEW-ONE OLD-ONE", GOOD_CALLS, KEY, list(BRIDGE), BRIDGE)]
+    record = {"at": 1000.0, "complete": True, "model": "m", "device": "lab-vsrx", "outcome": "graded", "phases": {"agent": 600}, "diff": DIFF,
+              "grade": grade, "passed": True, "calls": GOOD_CALLS, "changes": parsed, "changes_source": "structured", "changes_note": ""}
+    return {**record, **changes}
+
+
+def test_no_drift_posts_nothing_but_golden_recorded_and_drift_do_post():
+    assert report.build_report({"run": run_record(outcome="no drift", diff={"added": [], "removed": [], "objects": {}})}, now=1100.0) == ""
+    text = report.build_report({"run": run_record(outcome="golden recorded", live_lines=120, diff=None)}, now=1100.0)
+    assert "golden recorded: 120 lines" in text and "no model run" in text
+    assert "DRIFT" in report.build_report({"run": run_record()}, now=1100.0)
+
+
+def test_report_puts_the_certain_diff_before_the_models_reading():
+    text = report.build_report({"run": run_record()}, now=1100.0)
+    assert text.index("Certain (computed by code): 2 lines added, 3 removed; 4 objects touched") < text.index("The agent's reading (a local model's")
+    assert "- policy: ALLOW-WEB, NEW-ONE, OLD-ONE" in text and "- set security policies from-zone CDE to-zone untrust policy OLD-ONE then permit" in text
+    assert "Verified (object touched, evidence is a changed line): 1" in text and "Object touched, evidence is not a changed line: 1" in text
+    assert "Unverified (names something the diff did not touch): 1" in text and "is secure" not in text
+
+
+def test_report_problem_cases_post_and_never_blame_the_firewall():
+    assert "no collect run" in report.build_report({}, now=1.0)
+    assert "no collect run" in report.build_report({"run": run_record()}, now=1000.0 + 21 * 3600)
+    assert "collect did not finish" in report.build_report({"run": run_record(complete=False)}, now=1100.0)
+    text = report.build_report({"run": run_record(outcome="could not run", reason="device unreachable (X)", changes=[], grade=[])}, now=1100.0)
+    assert "could not run: device unreachable" in text and "FAIL" not in text and "Certain" in text  # the diff is still shown when the agent could not run
+    assert "no valid structured changes block" in report.build_report({"run": run_record(changes=[], changes_source="none", changes_note="no ```json block")}, now=1100.0)
+
+
+def test_report_defangs_model_and_config_text_and_caps_lists():
+    nasty = {"added": ["set x @everyone [a](http://e.example) `ls`"] * 12, "removed": [], "objects": {"@everyone": "policy"}}
+    many = [{"object": f"O{i}", "kind": "policy", "effect": "@everyone [x](http://e.example) `ls`", "risk": "low", "evidence": "e", "status": "verified"} for i in range(12)]
+    text = report.build_report({"run": run_record(diff=nasty, changes=many)}, now=1100.0)
+    assert "@everyone" not in text and "](" not in text and "http://" not in text and "`" not in text
+    assert "and 4 more" in text and "and 4 more added" in text

@@ -1,0 +1,10 @@
+[Unit]
+Description=labbots: driftagent report (posts only on drift or a new golden)
+
+[Timer]
+OnCalendar=*-*-* 07:55:00
+Persistent=true
+Unit=labbot@driftagent.service
+
+[Install]
+WantedBy=timers.target
