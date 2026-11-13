@@ -43,5 +43,9 @@
   state lock and may use up its time limit.
 - **Two commits in quick succession** can be reported under the older commit's note (device and user).
 - **`driftagent` is still graded from the model's prose**, not from a findings list.
+- **`driftagent` reports a change to an SSH algorithm setting but the saved report withholds the line**, because
+  the shared scrub still treats key-type names (`ssh-ed25519`) as key material. Read the device for the detail.
+- **`socagent`'s evidence window ends slightly before socbot's own queries ran** with mecbots 0.0.1 or older, so the
+  alert that caused an escalation can fall just outside it. Fixed in mecbots releases after 0.0.1.
 - **The whole-record scrub is broad**: a value under any key containing "token" or "secret", and any run of 32 or
   more base64-like characters, is withheld from saved runs and reports, credential or not.

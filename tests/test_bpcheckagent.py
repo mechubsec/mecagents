@@ -324,6 +324,10 @@ def test_deactivating_a_permit_sub_statement_or_a_list_member_is_not_the_whole_s
     assert grading.derive_key(sub)["must_find"] == ["P"]  # the permit itself is still active
     listed = make_config(policy("P", source="[ any LAN ]")) + "\ndeactivate security policies from-zone A to-zone B policy P match source-address any"
     assert grading.derive_key(listed)["must_find"] == []  # `any` was the deactivated member; LAN narrows it
+    scope = ("A>B", "P")
+    logged = f"{head} then permit\n{head} then log session-close"
+    assert grading.parse_policies(logged)[scope]["log"] is True
+    assert grading.parse_policies(logged + "\ndeactivate security policies from-zone A to-zone B policy P then log session-close")[scope]["log"] is False
 
 
 def run_collect_grade(monkeypatch, packet, files=None, calls=GOOD_CALLS):

@@ -49,8 +49,11 @@ def parse_policies(config_text: str) -> dict[tuple[str, str], dict]:
         if any(path[:len(prefix)] == prefix and len(prefix) <= core_end for prefix in inactive):  # this statement is deactivated, or something above it is
             continue
         members = {prefix[core_end] for prefix in inactive if len(prefix) == core_end + 1 and prefix[:core_end] == path[:core_end]}  # one deactivated list member
-        if words[:1] == ["match"]:
-            words = words[:2] + [word for word in words[2:] if word not in members]
+        if words[:1] == ["match"] or words[:2] == ["then", "log"]:
+            kept = [word for word in words[2:] if word not in members]
+            if words[:1] == ["then"] and words[2:] and not kept:  # every log leaf on this line is deactivated: no logging from it
+                continue
+            words = words[:2] + kept
         facts = policies.setdefault(("global" if not from_zone else f"{from_zone}>{to_zone}", name), {
             "source": set(), "destination": set(), "application": set(), "dynamic": set(), "permit": False, "log": False, "described": False,
             "from": from_zone, "to": to_zone})

@@ -341,7 +341,8 @@ def test_ssh_algorithm_settings_are_kept_but_key_material_is_not():
     kept = ["set system services ssh hostkey-algorithm ssh-ed25519", "set system services ssh ciphers [ aes256-ctr aes128-ctr ]", "set system services ssh macs hmac-sha2-256",
             "set system services ssh key-exchange curve25519-sha256@libssh.org", "deactivate system services ssh hostkey-algorithm ssh-rsa"]
     assert grading.normalise("\n".join(kept)) == kept
-    dropped = ["set system services ssh hostkey-algorithm ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExample", "set system services ssh ciphers private-key x"]
+    dropped = ["set system services ssh hostkey-algorithm ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExample", "set system services ssh ciphers private-key x",
+               "set system services ssh ciphers authentication-password hunter2"]
     assert grading.normalise("\n".join(dropped)) == []
 
 

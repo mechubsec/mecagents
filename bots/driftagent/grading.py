@@ -36,8 +36,17 @@ OBJECT_PATTERNS = [  # (regex over the line after "set "/"deactivate ", kind; ev
 ]
 # an SSH algorithm-name setting (`hostkey-algorithm ssh-ed25519`): it only matches SECRET_LINE through the key-type name, and holds no key
 ALGORITHM_LINE = re.compile(r"^(?:set|deactivate) system services ssh (?:hostkey-algorithm(?:-list)?|pubkey-algorithm|key-exchange|ciphers|macs)(?: (?:\[|\]|(?!\S*key)[\w@.+-]{1,48}))+$")
+KEY_TYPE = re.compile(r"ssh-(?:rsa|ed25519|ecdsa|dss)")
 ZONE_INTERFACE = re.compile(r"^security zones security-zone \S+ interfaces (\S+)")
 INTERFACE = re.compile(r"^interfaces (\S+)(?: unit (\d+))?")
+
+
+def holds_credential(line: str) -> bool:
+    """True when a config line could hold a credential. An SSH algorithm setting is exempt only when nothing but its key-type
+    names (`ssh-ed25519`) looked like one: any other credential field or blob on the line still counts."""
+    if not SECRET_LINE.search(line):
+        return False
+    return not (ALGORITHM_LINE.match(line) and not looks_like_credential(KEY_TYPE.sub("algorithm", line)))
 
 
 def normalise(config_text: str) -> list[str]:
@@ -46,7 +55,7 @@ def normalise(config_text: str) -> list[str]:
     lines, seen = [], set()
     for raw in config_text.splitlines():
         line = " ".join(PLACEHOLDER.sub("<redacted>", raw).split())
-        if not line.startswith(("set ", "deactivate ")) or line.startswith("set version ") or (SECRET_LINE.search(line) and not ALGORITHM_LINE.match(line)) or line in seen:
+        if not line.startswith(("set ", "deactivate ")) or line.startswith("set version ") or holds_credential(line) or line in seen:
             continue
         seen.add(line)
         lines.append(line)
