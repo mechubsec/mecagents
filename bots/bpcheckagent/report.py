@@ -72,7 +72,8 @@ def build_report(state: dict, now: float) -> str:
     key = run.get("key", {})
     lines.append("Derived from the device config (code, not a model): must name " + (defang(", ".join(key.get("must_find", [])), 200) or "nothing")
                  + f"; {len(key.get('permits_without_log', []))} permit policies without logging; must not flag " + (defang(", ".join(key.get("must_not_flag", [])), 100) or "nothing"))
-    lines.append(f"{'🟢 PASS' if run['passed'] else '🔴 FAIL'}: {sum(1 for _, ok, _ in criteria if ok)} of {len(criteria)} criteria")
+    basis = f", graded {defang(run['grade_basis'], 60)}" if run.get("grade_basis") else ""
+    lines.append(f"{'🟢 PASS' if run['passed'] else '🔴 FAIL'}: {sum(1 for _, ok, _ in criteria if ok)} of {len(criteria)} criteria{basis}")
     lines += [f"{'✅' if ok else '❌'} {name}" + (f": {defang(detail, 80)}" if detail and not ok else "") for name, ok, detail in criteria]
     names = sorted({call["tool"] for call in run.get("calls", [])})
     lines.append(f"Tool calls: {len(run.get('calls', []))} ({defang(', '.join(names), 100)})")

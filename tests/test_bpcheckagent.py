@@ -297,3 +297,55 @@ def test_report_defangs_the_check_label():
     finding = {"text": "t", "severity": "high", "check": "@everyone [x](http://e.example) `ls`", "cites": ["R"], "status": "verified"}
     text = report.build_report({"run": graded_run(findings=[finding])}, now=1100.0)
     assert "@everyone" not in text and "](" not in text and "http://" not in text and "`" not in text
+
+
+# --- second review round ---------------------------------------------------------------------------------
+
+def test_a_deactivated_dynamic_application_match_no_longer_narrows_the_policy():
+    dynamic = "set security policies from-zone A to-zone B policy DYN match dynamic-application junos:HTTP"
+    wide = make_config(policy("DYN"), policy("PLAIN"))
+    assert grading.derive_key(wide + "\n" + dynamic)["must_find"] == ["PLAIN"]  # an active restrictive match narrows DYN
+    off = grading.derive_key(wide + "\n" + dynamic + "\ndeactivate security policies from-zone A to-zone B policy DYN match dynamic-application")
+    assert off["must_find"] == ["DYN", "PLAIN"]
+    elsewhere = grading.derive_key(wide + "\n" + dynamic + "\ndeactivate security policies from-zone A to-zone B policy PLAIN match dynamic-application")
+    assert elsewhere["must_find"] == ["PLAIN"]
+    assert grading.derive_key(wide + "\ndeactivate security policies from-zone A to-zone B policy PLAIN then permit")["must_find"] == ["DYN"]
+    assert grading.derive_key(wide + "\ndeactivate security policies from-zone A to-zone B")["must_find"] == []
+    assert grading.derive_key(wide + "\ndeactivate security policies")["must_find"] == []
+    unlogged = make_config(policy("U", "H", "D", "junos-ntp", log="session-close"), policy("U2", "H", "D", "junos-ntp"))
+    assert grading.derive_key(unlogged)["permits_without_log"] == ["U2"]
+    assert grading.derive_key(unlogged + "\ndeactivate security policies from-zone A to-zone B policy U2 then permit")["permits_without_log"] == []
+
+
+def run_collect_grade(monkeypatch, packet, files=None, calls=GOOD_CALLS):
+    """collect.run_agent_and_grade end to end with the model stubbed: (run, every saved copy of the state)."""
+    monkeypatch.setattr(collect.agent, "preflight_offered_tools", lambda *a: list(BRIDGE))
+    monkeypatch.setattr(collect.agent, "run_hermes", lambda *a: {"status": "ok", "output": packet, "files": files or {}, "session_id": "s1", "seconds": 1})
+    monkeypatch.setattr(collect.agent, "session_facts", lambda *a: {"tools_offered": list(BRIDGE), "calls": calls})
+    run, saved = {"phases": {}}, []
+    collect.run_agent_and_grade(run, lambda: saved.append(json.dumps(run)), CONFIG)
+    return run, saved
+
+
+def test_collect_grades_a_valid_block_from_its_findings_not_from_the_prose(monkeypatch):
+    prose = "OPEN-ZP and OPEN-GLOBAL permit any/any/any. SSH-IN has no logging.\n"
+    packet = prose + block(item(rule="SSH-IN", summary="no logging"))  # the prose names the any/any/any policies, the block does not
+    run, _ = run_collect_grade(monkeypatch, packet)
+    grade = {name: ok for name, ok, _ in run["grade"]}
+    assert run["findings_source"] == "structured" and run["grade_basis"] == "structured findings"
+    assert grade["finds OPEN-ZP"] is False and grade["finds OPEN-GLOBAL"] is False and run["passed"] is False
+    run, _ = run_collect_grade(monkeypatch, prose)  # no block: the text is what there is, and the run says so
+    assert run["findings_source"] == "none" and run["grade_basis"] == "from text (no structured findings)"
+    assert {name: ok for name, ok, _ in run["grade"]}["finds OPEN-ZP"] is True
+    text = report.build_report({"run": {**graded_run(), "grade_basis": "structured findings"}}, now=1100.0)
+    assert "graded structured findings" in text
+
+
+def test_nothing_credential_looking_is_saved_to_the_state_file(monkeypatch):
+    import agent
+    secret = 'set security ike policy P pre-shared-key ascii-text "hunter2"'
+    packet = block(item(summary='Secret "hunter2" configured', evidence=secret)) + f"\nthe config has {secret}\n"
+    calls = GOOD_CALLS + [{"tool": "tool_call", "arguments": {"name": "get_junos_config", "arguments": {"note": secret}}}]
+    run, saved = run_collect_grade(monkeypatch, packet, files={"notes.txt": secret}, calls=calls)
+    assert saved and not any("hunter2" in text for text in saved) and "hunter2" not in json.dumps(run)
+    assert agent.WITHHELD in run["packet"] and run["grade"]

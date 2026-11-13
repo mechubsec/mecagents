@@ -20,9 +20,13 @@ Against a **derived key** (`grading.derive_key`), read from `set security polici
 
 - every permit policy with source, destination and application all `any` must be named, unless a
   `match dynamic-application` other than `any` narrows it (then it is in neither list);
-- a policy taken out by a `deactivate security policies ...` line (one policy, a zone pair or all) is in neither list;
+- a `deactivate security policies ...` line switches off everything at or below its path: a policy, a zone pair or all of them (in
+  neither list), or one statement, so a deactivated `match dynamic-application` no longer narrows its policy;
 - if any permit policy has no `log`, the model must say logging is missing;
 - a permit policy that is described, logged and narrow must not be rated a defect.
+
+A valid findings block is graded from its parsed findings, not from the prose around it (the report says "graded structured
+findings"); without one the text is scored, and the run says so. Nothing credential-looking from the model (its output, any files, its tool-call arguments) is written to the state file: those lines are replaced by a placeholder before the first save, while grading reads the original. State files and their lock are mode 600.
 
 Plus the same tool-use criteria as pcicomplyagent. Limits: only those `set` lines are read (not default policy,
 bracketed lists, order or shadowing), and policies are matched by name alone.

@@ -69,17 +69,22 @@ def run_agent_and_grade(run: dict, save, config_text: str) -> None:
     save()
     result = agent.run_hermes(PROFILE, MODEL, SKILLS, (HERE / "prompt.md").read_text().strip().replace("<<DEVICE>>", DEVICE), AGENT_TIMEOUT)
     timed(run, "agent", started)
-    run.update(agent_status=result["status"], packet=result["output"][:30000], files=result["files"], session_id=result["session_id"])
+    # nothing credential-looking reaches the state file: the stored copies are scrubbed, grading below reads the raw ones
+    run.update(agent_status=result["status"], packet=agent.scrub_text(result["output"][:30000]), files=agent.scrub_json(result["files"]),
+               session_id=result["session_id"])
     if not result["session_id"]:  # Hermes never started a session: nothing to grade
         raise RuntimeError(f"hermes run did not start: {result['status']}")
     facts = agent.session_facts(PROFILE, result["session_id"])
-    run.update(tools_offered=facts["tools_offered"], calls=facts["calls"])
+    run.update(tools_offered=facts["tools_offered"], calls=agent.scrub_json(facts["calls"]))
     save()
     started = time.time()
     # a file the model wrote (it has no file tool, so normally none) is part of its answer
     packet = "\n\n".join([result["output"], *result["files"].values()])
-    run["findings"], run["findings_source"], run["findings_note"] = grading.findings_for(packet, config_text)
-    run["grade"] = agent.grade(packet, facts["calls"], key, facts["tools_offered"], agent.BRIDGE_TOOLS, result["status"])
+    findings, run["findings_source"], run["findings_note"] = grading.findings_for(packet, config_text)
+    run["findings"] = agent.scrub_json(findings)
+    scored = findings if run["findings_source"] == "structured" else None  # a valid block is graded from its findings, not the prose
+    run["grade_basis"] = "structured findings" if scored is not None else "from text (no structured findings)"
+    run["grade"] = agent.grade(packet, facts["calls"], key, facts["tools_offered"], agent.BRIDGE_TOOLS, result["status"], scored)
     run["passed"] = all(ok for _, ok, _ in run["grade"])
     timed(run, "verify", started)
 

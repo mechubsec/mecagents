@@ -4,7 +4,8 @@ practice exists), and the packet is scored against it with the shared criteria i
 Derived from the `set` lines of the security policies:
 - must_find: every permit policy whose source, destination and application are all `any`, zone-pair or global, unless a
   `match dynamic-application` other than `any` narrows it (then it is left out of both lists);
-- a `deactivate security policies ...` line (one policy, a zone pair, or all) takes the policy out of every list;
+- a `deactivate security policies ...` line switches off everything at or below its path: a policy, a zone pair or all of
+  them (the policy leaves every list), or one statement such as its `match dynamic-application` (that match then no longer narrows it);
 - the missing-logging concept: required once if at least one permit policy has no `log` statement;
 - must_not_flag: a permit policy that is described, logged and narrow (no `any` in source, destination or application,
   and a concrete from/to zone). Conservative: a policy that fits neither list is simply not graded.
@@ -30,19 +31,22 @@ FORBIDDEN_PHRASES = ["is secure", "fully secure", "is compliant", "follows best 
 
 def parse_policies(config_text: str) -> dict[tuple[str, str], dict]:
     """{(scope, name): facts} for every security policy in a set-format config. scope is "global" or "from>to".
-    facts: source, destination, application (sets of names), permit, log, described (bools), zones (from, to) or None
-    for a global policy whose `match from-zone`/`to-zone` lines say where it applies."""
+    facts: source, destination, application, dynamic (sets of names), permit, log, described (bools), from, to (a zone or
+    None) for the zones a policy applies to. A `deactivate security policies <path>` line switches off everything at or
+    below its path: a whole policy (or zone pair, or all of them), or one statement such as `... policy P match
+    dynamic-application`, whose values then no longer narrow the policy. Shortcut: a single member of a bracketed list
+    cannot be deactivated here."""
+    lines = [line.strip() for line in config_text.splitlines()]
+    inactive = [(found.group(1) or "").replace('"', "").split() for found in map(DEACTIVATE_LINE.match, lines) if found]  # [] = every policy
     policies: dict[tuple[str, str], dict] = {}
-    inactive: list[list[str]] = []  # `deactivate security policies <path>`: the path as words ([] = every policy)
-    for line in config_text.splitlines():
-        deactivated = DEACTIVATE_LINE.match(line.strip())
-        if deactivated:
-            inactive.append((deactivated.group(1) or "").replace('"', "").split())
-            continue
-        found = POLICY_LINE.match(line.strip())
+    for line in lines:
+        found = POLICY_LINE.match(line)
         if not found:
             continue
         from_zone, to_zone, name, rest = found.groups()
+        path = line.removeprefix("set security policies ").replace('"', "").split()
+        if any(path[:len(prefix)] == prefix for prefix in inactive):  # this statement is deactivated, or something above it is
+            continue
         facts = policies.setdefault(("global" if not from_zone else f"{from_zone}>{to_zone}", name), {
             "source": set(), "destination": set(), "application": set(), "dynamic": set(), "permit": False, "log": False, "described": False,
             "from": from_zone, "to": to_zone})
@@ -65,12 +69,7 @@ def parse_policies(config_text: str) -> dict[tuple[str, str], dict]:
             facts["log"] = True
         elif words[0] == "description":
             facts["described"] = True
-    def in_force(key: tuple[str, str]) -> bool:
-        path = ["global"] if key[0] == "global" else ["from-zone", key[0].split(">")[0], "to-zone", key[0].split(">")[1]]
-        path += ["policy", key[1]]
-        return not any(path[:len(prefix)] == prefix for prefix in inactive)
-
-    return {key: facts for key, facts in policies.items() if in_force(key)}
+    return policies
 
 
 def any_any_any(policies: dict) -> list[str]:
