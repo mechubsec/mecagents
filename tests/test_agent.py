@@ -204,7 +204,7 @@ def test_scrub_keeps_objects_merely_named_with_a_secret_word():
     keep = ["set security policies global policy secret-app then permit", "set applications application secret-service protocol tcp",
             "set security address-book global address secret-net 10.0.0.0/24", "set policy-options community PARTNER members 65000:1"]
     assert agent.scrub_config("\n".join(keep)) == "\n".join(keep)
-    drop = ['set system root-authentication encrypted-password "$6$abc"', 'set access radius-server 10.0.0.1 secret "x"',
+    drop = ['set system root-authentication encrypted-password "$6$abc"', 'set access radius-server 192.0.2.1 secret "x"',
             'set security ike policy p pre-shared-key ascii-text "$9$abc"', "set snmp community public authorization read-only",
             "set snmp v3 usm local-engine user u authentication-sha authentication-password x", "set system login user u authentication ssh-ed25519 \"ssh-ed25519 AAA\"",
             "set interfaces ge-0/0/0 description $9$QzF"]

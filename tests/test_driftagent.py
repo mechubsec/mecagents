@@ -301,7 +301,7 @@ def test_deactivating_a_policy_is_drift_and_names_the_policy():
 
 def test_same_policy_name_in_two_zone_pairs_is_two_objects_and_one_mention_is_not_enough():
     lines = ["set security policies from-zone A to-zone B policy P then permit", "set security policies from-zone C to-zone D policy P then permit",
-             "set security policies global policy P then permit", "set security address-book b1 address H 1.1.1.1/32", "set security address-book b2 address H 2.2.2.2/32"]
+             "set security policies global policy P then permit", "set security address-book b1 address H 198.51.100.1/32", "set security address-book b2 address H 198.51.100.2/32"]
     objects = grading.touched_objects(lines)
     assert objects == {"A/B/P": "policy", "C/D/P": "policy", "global/P": "policy", "b1/H": "address", "b2/H": "address"}
     key = grading.derive_key(objects)
@@ -312,9 +312,9 @@ def test_same_policy_name_in_two_zone_pairs_is_two_objects_and_one_mention_is_no
 
 def test_a_policy_named_secret_is_compared_but_credential_fields_are_not():
     named = ["set security policies global policy allow-secret-server then permit", "set security policies global policy allow-secret-server match source-address H",
-             "set security address-book global address secret-host 1.1.1.1/32", "set security policies global policy secret then permit"]
+             "set security address-book global address secret-host 198.51.100.1/32", "set security policies global policy secret then permit"]
     assert grading.normalise("\n".join(named)) == named
-    credentials = ['set system root-authentication encrypted-password "$6$abc"', 'set system radius-server 1.1.1.1 secret "$9$xyz"', "set system radius-server 1.1.1.1 secret <redacted>",
+    credentials = ['set system root-authentication encrypted-password "$6$abc"', 'set system radius-server 198.51.100.1 secret "$9$xyz"', "set system radius-server 198.51.100.1 secret <redacted>",
                    'set security ike policy P pre-shared-key ascii-text "$9$k"', 'set protocols bgp group G authentication-key "$9$k"', "set snmp community public authorization read-only",
                    'set system login user u authentication ssh-rsa "ssh-rsa AAAA"', 'set snmp v3 usm local-engine user u authentication-sha authentication-password "x"']
     assert grading.normalise("\n".join(credentials)) == []
@@ -326,7 +326,7 @@ def test_model_fields_that_look_like_credentials_are_withheld():
                "token " + "A1b2C3d4" * 5, "key " + "ab12" * 8, "snmp community public added"]
     for text in secrets:
         assert grading.looks_like_credential(text), text
-    for text in ("policy ALLOW-WEB lost logging", "allow-secret-server now permits any", "10.0.0.1/32 became 10.0.0.9/32", "the secret server rule was widened"):
+    for text in ("policy ALLOW-WEB lost logging", "allow-secret-server now permits any", "192.0.2.1/32 became 192.0.2.9/32", "the secret server rule was widened"):
         assert not grading.looks_like_credential(text), text
     changes, _ = grading.structured_changes(block(change(effect='set pre-shared-key ascii-text "$9$abc"'), change(evidence="set system root-authentication encrypted-password X"),
                                                   change(obj="x" * 40), change()), DIFF)
