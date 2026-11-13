@@ -166,7 +166,9 @@ def recorded_run(state_path: Path, **fields):
     (a second run on the same day replaces today's). `run["complete"]` becomes true only when the block exits
     normally, so a collect killed halfway leaves a run the report calls incomplete."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    with os.fdopen(os.open(state_path.with_suffix(".lock"), os.O_WRONLY | os.O_CREAT, 0o600), "w") as lock:
+    descriptor = os.open(state_path.with_suffix(".lock"), os.O_WRONLY | os.O_CREAT, 0o600)
+    os.fchmod(descriptor, 0o600)  # O_CREAT's mode applies only to a new file; tighten a lock made before
+    with os.fdopen(descriptor, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         state = json.loads(state_path.read_text()) if state_path.exists() else {}
         today = time.strftime("%Y-%m-%d")
@@ -176,7 +178,8 @@ def recorded_run(state_path: Path, **fields):
         state["run"] = run
 
         def save() -> None:
-            write_private_atomic(state_path, json.dumps(state, indent=1))
+            # the single point of persistence: scrub a COPY of everything (derived notes, grade details, keys), the run stays intact
+            write_private_atomic(state_path, json.dumps(scrub_record(state), indent=1))
 
         save()
         yield run, save
@@ -400,6 +403,25 @@ def scrub_json(value):
         return [scrub_json(item) for item in value]
     if isinstance(value, dict):
         return {key: scrub_json(item) for key, item in value.items()}
+    return value
+
+
+# a mapping key naming a credential field: the whole value under it is replaced, whatever it holds
+CREDENTIAL_KEY = re.compile(r"password|passwd|secret|pre-?shared-?key|authentication-?key|community|privacy-?key|private-?key|api-?key|token", re.I)
+WITHHELD_VALUE = "[value withheld: credential field]"
+
+
+def scrub_record(value):
+    """A scrubbed COPY of a whole record (nested dicts, lists, tuples, strings), for writing to disk: every string value and
+    every mapping key goes through scrub_text, and a value under a credential-named key is replaced whole. A heuristic: a
+    secret in ordinary prose with no credential field name near it can still pass. The original is left untouched."""
+    if isinstance(value, str):
+        return scrub_text(value)
+    if isinstance(value, (list, tuple)):
+        return [scrub_record(item) for item in value]
+    if isinstance(value, dict):
+        return {scrub_text(str(key)): WITHHELD_VALUE if CREDENTIAL_KEY.search(str(key)) and item not in (None, "", [], {}) else scrub_record(item)
+                for key, item in value.items()}
     return value
 
 

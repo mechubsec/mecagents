@@ -253,3 +253,26 @@ def test_the_lock_beside_a_state_file_is_mode_600(tmp_path):
     with agent.recorded_run(tmp_path / "s.json"):
         pass
     assert {path.suffix: path.stat().st_mode & 0o777 for path in tmp_path.iterdir()} == {".json": 0o600, ".lock": 0o600}
+
+
+def test_the_state_file_never_holds_a_credential_from_any_derived_field(tmp_path):
+    secret = "hun" + "ter2"
+    state = tmp_path / "s.json"
+    with agent.recorded_run(state, model="m") as (run, save):
+        run["grade"] = [["run finished", False, 'Secret "%s" configured' % secret]]
+        run["findings_note"] = "bad block: SNMP community %s" % secret
+        run["verdict_note"] = "Pre-Shared-Key ascii-text %s" % secret
+        run["calls"] = [{"tool": "t", "arguments": {"authentication-password": secret, "Secret \"%s\"" % secret: "x", "name": "ok"}}]
+        save()
+        assert secret in json.dumps(run)  # the in-memory record is untouched
+    text = state.read_text()
+    assert secret not in text
+    assert json.loads(text)["run"]["calls"][0]["arguments"]["name"] == "ok"
+
+
+def test_an_old_lock_with_a_loose_mode_is_tightened(tmp_path):
+    (tmp_path / "s.lock").touch(mode=0o644)
+    (tmp_path / "s.lock").chmod(0o644)
+    with agent.recorded_run(tmp_path / "s.json"):
+        pass
+    assert (tmp_path / "s.lock").stat().st_mode & 0o777 == 0o600

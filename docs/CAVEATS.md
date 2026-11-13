@@ -26,9 +26,10 @@
   shared by two policies is judged on all of them, because the agent's rule name has no scope.
 - **A dry run can write state.** `run_bot.py <agent>.collect --dry-run` runs the real collect: it calls the
   model and writes the state file (and, for driftagent, may record a golden). Only the post is skipped.
-- **State files hold no credential-looking model text, but the check is a heuristic.** Lines of model output, files and tool-call
-  arguments that match a credential field, key material or a long blob are replaced before saving; a plain-text secret in
-  prose can pass. State files are mode 600.
+- **State files hold no credential-looking model text, but the check is a heuristic.** Every string in the run record (model output, files, tool-call
+  arguments and keys, and notes or grade details derived from them) that matches a credential field, key material or a long
+  blob is replaced when the record is saved, and a value under a credential-named key is replaced whole; a plain-text secret
+  in prose with no credential field name near it can pass. State files are mode 600.
 - **Never run an agent with a write-capable token.** The token's scope is the real barrier; the prompt's
   "read only" is not.
 - **Discord is a cloud service.** Reports name devices and rules. The mecbots runner (0.2.0 or later, which
