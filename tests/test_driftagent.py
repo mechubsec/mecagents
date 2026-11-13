@@ -92,20 +92,20 @@ def test_touched_objects_name_policy_address_zone_interface_and_other():
         'set security address-book global address-set "SET1" address H', "set security zones security-zone CDE interfaces ge-0/0/2.120",
         "set interfaces ge-0/0/3 unit 5 family inet", "set interfaces fxp0 vlan-tagging", "set applications application-set CDE-WEB application junos-http",
         "set security nat source rule-set RS rule R1 then source-nat interface", "set system ntp server 192.0.2.11"])
-    assert objects == {"P1": "policy", "P2": "policy", "SET1": "address", "CDE": "zone", "ge-0/0/2.120": "interface", "ge-0/0/2": "interface",
+    assert objects == {"global/P1": "policy", "A/B/P2": "policy", "global/SET1": "address", "CDE": "zone", "ge-0/0/2.120": "interface", "ge-0/0/2": "interface",
                        "ge-0/0/3": "interface", "ge-0/0/3.5": "interface", "fxp0": "interface", "CDE-WEB": "other", "RS": "other", "R1": "other", "system ntp": "other"}
-    assert DIFF["objects"] == {"WEB": "address", "NEW-ONE": "policy", "ALLOW-WEB": "policy", "OLD-ONE": "policy"}
+    assert DIFF["objects"] == {"global/WEB": "address", "CDE/untrust/NEW-ONE": "policy", "global/ALLOW-WEB": "policy", "CDE/untrust/OLD-ONE": "policy"}
 
 
 def test_key_requires_every_touched_policy():
     key = grading.derive_key(DIFF["objects"])
-    assert key["must_find"] == ["ALLOW-WEB", "NEW-ONE", "OLD-ONE"] and key["target"] == "lab-vsrx"
-    assert grading.derive_key({"WEB": "address"})["must_find"] == []
+    assert key["must_find"] == ["CDE/untrust/NEW-ONE", "CDE/untrust/OLD-ONE", "global/ALLOW-WEB"] and key["target"] == "lab-vsrx"
+    assert grading.derive_key({"global/WEB": "address"})["must_find"] == []
 
 
 # --- changes block ---------------------------------------------------------------------------------------
 
-def change(obj="ALLOW-WEB", kind="policy", effect="e", risk="medium", evidence="set security policies global policy ALLOW-WEB then log session-close"):
+def change(obj="global/ALLOW-WEB", kind="policy", effect="e", risk="medium", evidence="set security policies global policy ALLOW-WEB then log session-close"):
     return {"object": obj, "kind": kind, "effect": effect, "risk": risk, "evidence": evidence}
 
 
@@ -129,7 +129,7 @@ def test_invalid_block_is_refused_with_a_reason():
 
 
 def test_fields_are_capped_and_lowercased():
-    (one,), _ = grading.structured_changes(block(change(effect="x" * 999, risk="HIGH", obj="A" * 300)), DIFF)
+    (one,), _ = grading.structured_changes(block(change(effect="word " * 200, risk="HIGH", obj="A-" * 150)), DIFF)
     assert len(one["effect"]) == 300 and one["risk"] == "high" and len(one["object"]) == 80
 
 
@@ -139,13 +139,13 @@ KEY = grading.derive_key(DIFF["objects"])
 GOOD_CALLS = [{"tool": "tool_call", "arguments": {"name": "get_junos_config", "arguments": {"router_name": "lab-vsrx", "format": "set"}}}]
 
 
-def graded(packet="ALLOW-WEB lost logging; NEW-ONE and OLD-ONE changed.", calls=GOOD_CALLS, offered=tuple(BRIDGE), ended="ok"):
+def graded(packet="global/ALLOW-WEB lost logging; CDE/untrust/NEW-ONE and CDE/untrust/OLD-ONE changed.", calls=GOOD_CALLS, offered=tuple(BRIDGE), ended="ok"):
     return {name: ok for name, ok, _ in agent.grade(packet, calls, KEY, list(offered), BRIDGE, ended)}
 
 
 def test_good_run_passes_and_each_criterion_can_fail():
     assert all(graded().values())
-    assert not graded("ALLOW-WEB and NEW-ONE")["finds OLD-ONE"]
+    assert not graded("global/ALLOW-WEB and CDE/untrust/NEW-ONE")["finds CDE/untrust/OLD-ONE"]
     assert not graded(offered=BRIDGE | {"terminal"})["model offered only the MCP bridge"]
     assert not graded(calls=[])["made MCP calls"]
     assert not graded(calls=GOOD_CALLS + [{"tool": "tool_call", "arguments": {"name": "rollback_config", "arguments": {}}}])["no write tools called"]
@@ -265,7 +265,7 @@ def test_no_drift_posts_nothing_but_golden_recorded_and_drift_do_post():
 def test_report_puts_the_certain_diff_before_the_models_reading():
     text = report.build_report({"run": run_record()}, now=1100.0)
     assert text.index("Certain (computed by code): 2 lines added, 3 removed; 4 objects touched") < text.index("The agent's reading (a local model's")
-    assert "- policy: ALLOW-WEB, NEW-ONE, OLD-ONE" in text and "- set security policies from-zone CDE to-zone untrust policy OLD-ONE then permit" in text
+    assert "- policy: CDE/untrust/NEW-ONE, CDE/untrust/OLD-ONE, global/ALLOW-WEB" in text and "- set security policies from-zone CDE to-zone untrust policy OLD-ONE then permit" in text
     assert "Verified (object touched, evidence is a changed line): 1" in text and "Object touched, evidence is not a changed line: 1" in text
     assert "Unverified (names something the diff did not touch): 1" in text and "is secure" not in text
 
@@ -285,3 +285,53 @@ def test_report_defangs_model_and_config_text_and_caps_lists():
     text = report.build_report({"run": run_record(diff=nasty, changes=many)}, now=1100.0)
     assert "@everyone" not in text and "](" not in text and "http://" not in text and "`" not in text
     assert "and 4 more" in text and "and 4 more added" in text
+
+
+# --- deactivate, object keys, credentials ----------------------------------------------------------------
+
+def test_deactivating_a_policy_is_drift_and_names_the_policy():
+    live = GOLDEN + "deactivate security policies global policy ALLOW-WEB\n"
+    result = grading.compare(GOLDEN, live)
+    assert result["added"] == ["deactivate security policies global policy ALLOW-WEB"] and result["removed"] == []
+    assert result["objects"] == {"global/ALLOW-WEB": "policy"} and grading.derive_key(result["objects"])["must_find"] == ["global/ALLOW-WEB"]
+    assert grading.compare(live, GOLDEN)["removed"] == ["deactivate security policies global policy ALLOW-WEB"]  # re-activating is drift too
+    (change_,), _ = grading.structured_changes(block(change(evidence="deactivate security policies global policy ALLOW-WEB")), result)
+    assert change_["status"] == "verified"
+
+
+def test_same_policy_name_in_two_zone_pairs_is_two_objects_and_one_mention_is_not_enough():
+    lines = ["set security policies from-zone A to-zone B policy P then permit", "set security policies from-zone C to-zone D policy P then permit",
+             "set security policies global policy P then permit", "set security address-book b1 address H 1.1.1.1/32", "set security address-book b2 address H 2.2.2.2/32"]
+    objects = grading.touched_objects(lines)
+    assert objects == {"A/B/P": "policy", "C/D/P": "policy", "global/P": "policy", "b1/H": "address", "b2/H": "address"}
+    key = grading.derive_key(objects)
+    only_one = {name: ok for name, ok, _ in agent.grade("A/B/P changed", GOOD_CALLS, key, list(BRIDGE), BRIDGE)}
+    assert only_one["finds A/B/P"] and not only_one["finds C/D/P"] and not only_one["finds global/P"]
+    assert grading.touched_objects(["set security policies from-zone A to-zone B policy P then permit"]) != grading.touched_objects(["set security policies from-zone A to-zone C policy P then permit"])
+
+
+def test_a_policy_named_secret_is_compared_but_credential_fields_are_not():
+    named = ["set security policies global policy allow-secret-server then permit", "set security policies global policy allow-secret-server match source-address H",
+             "set security address-book global address secret-host 1.1.1.1/32", "set security policies global policy secret then permit"]
+    assert grading.normalise("\n".join(named)) == named
+    credentials = ['set system root-authentication encrypted-password "$6$abc"', 'set system radius-server 1.1.1.1 secret "$9$xyz"', "set system radius-server 1.1.1.1 secret <redacted>",
+                   'set security ike policy P pre-shared-key ascii-text "$9$k"', 'set protocols bgp group G authentication-key "$9$k"', "set snmp community public authorization read-only",
+                   'set system login user u authentication ssh-rsa "ssh-rsa AAAA"', 'set snmp v3 usm local-engine user u authentication-sha authentication-password "x"']
+    assert grading.normalise("\n".join(credentials)) == []
+    assert grading.normalise("set routing-options community C members 65000:1") == ["set routing-options community C members 65000:1"]
+
+
+def test_model_fields_that_look_like_credentials_are_withheld():
+    secrets = ['pre-shared-key ascii-text "$9$abc"', "the hash $6$salt$hashvalue was set", "encrypted-password changed", "secret \"hunter2\" now",
+               "token " + "A1b2C3d4" * 5, "key " + "ab12" * 8, "snmp community public added"]
+    for text in secrets:
+        assert grading.looks_like_credential(text), text
+    for text in ("policy ALLOW-WEB lost logging", "allow-secret-server now permits any", "10.0.0.1/32 became 10.0.0.9/32", "the secret server rule was widened"):
+        assert not grading.looks_like_credential(text), text
+    changes, _ = grading.structured_changes(block(change(effect='set pre-shared-key ascii-text "$9$abc"'), change(evidence="set system root-authentication encrypted-password X"),
+                                                  change(obj="x" * 40), change()), DIFF)
+    assert [c["withheld"] for c in changes] == [True, True, True, False]  # a 40-char blob is a credential-looking object name too
+    assert changes[0]["effect"] == "[withheld]" and changes[0]["evidence"] is None and changes[0]["status"] == "verified"
+    assert changes[3]["effect"] == "e" and changes[3]["evidence"]
+    text = report.build_report({"run": run_record(changes=changes)}, now=1100.0)
+    assert "evidence withheld (looked like a credential)" in text and "$9$" not in text and "encrypted-password" not in text

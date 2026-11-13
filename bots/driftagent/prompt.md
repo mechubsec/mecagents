@@ -25,5 +25,5 @@ TOOLS
 OUTPUT CONTRACT
 After your normal packet, finish with exactly one fenced json block, and nothing after it, of this form:
 ```json
-{"changes": [{"object": "<exact name of the policy, address entry, zone or interface the change concerns>", "kind": "policy|address|zone|interface|other", "effect": "<one sentence: what is now permitted, denied or logged that was not>", "risk": "high|medium|low|none", "evidence": "<one of the changed lines above, verbatim>"}]}
+{"changes": [{"object": "<what the change concerns: a policy as from-zone/to-zone/policy-name (or global/policy-name), an address entry as address-book/name, otherwise the exact name of the zone or interface>", "kind": "policy|address|zone|interface|other", "effect": "<one sentence: what is now permitted, denied or logged that was not>", "risk": "high|medium|low|none", "evidence": "<one of the changed lines above, verbatim>"}]}
 ```

@@ -50,7 +50,9 @@ def reading(run: dict) -> list[str]:
         group = [change for change in run.get("changes", []) if change["status"] == status]
         lines.append(f"{title}: " + ("none" if not group else f"{len(group)}"))
         lines += [f"- [{defang(change['risk'], 10).upper()}] {defang(change['object'], 60)} ({defang(change['kind'], 12)}) · "
-                  f"{defang(change['effect'], 160)} · evidence: {defang(change['evidence'] or 'none', 120)}" for change in group[:SHOWN]]
+                  f"{defang(change['effect'], 160)} · "
+                  + ("evidence withheld (looked like a credential)" if change.get("withheld") else f"evidence: {defang(change['evidence'] or 'none', 120)}")
+                  for change in group[:SHOWN]]
         lines += [f"- … and {len(group) - SHOWN} more"] if len(group) > SHOWN else []
     return lines
 

@@ -7,7 +7,7 @@ the change means, and only when there is one.
 
 1. No golden yet: the live config is saved as the golden (mode 600). No model runs.
 2. Identical: "no drift". No model runs.
-3. Different: code lists added and removed `set` lines and the objects they touch (policy, address, zone,
+3. Different: code lists added and removed `set` and `deactivate` lines (a deactivated policy is drift) and the objects they touch (policy, address, zone,
    interface, other); then one Hermes run explains the change. The report shows code's diff first, labelled
    certain, then the model's reading, labelled as such. It posts only on drift or a new golden, or to say the
    collect is missing or failed.
@@ -28,9 +28,18 @@ the change means, and only when there is one.
 
 ## How it is graded
 
-Against a **derived key**: every policy the diff touched must be named. Plus the tool-use criteria.
-Configs are compared as sets of lines, so a pure reorder is not drift, and lines that could hold a credential
-are dropped from both sides, so a rotated secret is invisible.
+Against a **derived key**: every policy the diff touched must be named, as `from-zone/to-zone/name` (or `global/name`),
+so the same name in two zone pairs is two objects and one mention cannot cover both; address-book entries are
+`book/name`. Plus the tool-use criteria.
+Configs are compared as sets of lines, so a pure reorder is not drift, and lines holding a credential field
+(`encrypted-password`, `pre-shared-key`, `secret "..."`, `authentication-key`, SNMP community...) are dropped from both
+sides, so a rotated secret is invisible. A name that merely contains the word `secret` is compared normally.
+
+## Credentials in model text
+
+The model sees the full config. Any `object`, `effect` or `evidence` it returns that looks like a credential (a Junos
+`$9$`/`$6$` string, a credential field, a long base64 or hex blob) is replaced before storage; the report says
+"evidence withheld (looked like a credential)". The heuristic can miss a plain-text secret in prose.
 
 ## Configuration
 
