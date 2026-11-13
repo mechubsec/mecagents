@@ -18,7 +18,9 @@ heuristic fallback: an invalid block means no findings, and the report says why.
 
 Against a **derived key** (`grading.derive_key`), read from `set security policies` lines of the fetched config:
 
-- every permit policy with source, destination and application all `any` must be named;
+- every permit policy with source, destination and application all `any` must be named, unless a
+  `match dynamic-application` other than `any` narrows it (then it is in neither list);
+- a policy taken out by a `deactivate security policies ...` line (one policy, a zone pair or all) is in neither list;
 - if any permit policy has no `log`, the model must say logging is missing;
 - a permit policy that is described, logged and narrow must not be rated a defect.
 

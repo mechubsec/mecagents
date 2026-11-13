@@ -22,7 +22,7 @@ SHOWN = 8  # findings listed per group; the rest are counted
 def finding_line(finding: dict) -> str:
     """One finding as the packet gave it: severity, check, the cited names, a capped excerpt."""
     severity = (finding.get("severity") or "?").upper()
-    check = finding.get("check") or "no check"
+    check = defang(finding.get("check") or "no check", 40)
     cites = ", ".join(finding["cites"]) or ("absent: no rule" if finding.get("status") == "absence" else "no rule cited")
     return f"[{severity}] {check} · {defang(cites, 80)} · {defang(finding['text'], 160)}"
 

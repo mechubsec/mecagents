@@ -264,3 +264,36 @@ def test_report_defangs_model_text():
 def test_no_hypervisor_reference_in_the_agent_code():
     for name in ("collect.py", "grading.py", "report.py"):
         assert "proxmox" not in (REPO / "bots" / "bpcheckagent" / name).read_text().lower()
+
+
+# --- dynamic-application and deactivate -----------------------------------------------------------------
+
+def test_a_restrictive_dynamic_application_narrows_an_any_application_policy():
+    dynamic = "set security policies from-zone A to-zone B policy DYN match dynamic-application "
+    narrowed = make_config(policy("DYN"), [dynamic + "junos:SSH"], policy("OPEN"))
+    assert grading.derive_key(narrowed)["must_find"] == ["OPEN"]
+    assert grading.derive_key(make_config(policy("DYN"), [dynamic + "[ junos:SSH junos:HTTP ]"]))["must_find"] == []
+    assert grading.derive_key(make_config(policy("DYN"), [dynamic + "any"]))["must_find"] == ["DYN"]
+
+
+def test_deactivated_policies_are_in_neither_list_and_not_counted_unlogged():
+    base = [policy("OPEN-ZP"), policy("OPEN-GLOBAL", zones=None), policy("KEEP", "H", "H", "x", log="l", description="d")]
+    cases = ["deactivate security policies from-zone A to-zone B policy OPEN-ZP", "deactivate security policies global policy OPEN-GLOBAL",
+             "deactivate security policies from-zone A to-zone B", "deactivate security policies"]
+    key = grading.derive_key(make_config(*base))
+    assert key["must_find"] == ["OPEN-GLOBAL", "OPEN-ZP"] and key["permits_without_log"] == ["OPEN-GLOBAL", "OPEN-ZP"]
+    one = grading.derive_key(make_config(*base, [cases[0]]))
+    assert one["must_find"] == ["OPEN-GLOBAL"] and one["permits_without_log"] == ["OPEN-GLOBAL"] and one["must_not_flag"] == ["KEEP"]
+    assert grading.derive_key(make_config(*base, [cases[1]]))["must_find"] == ["OPEN-ZP"]
+    pair = grading.derive_key(make_config(*base, [cases[2]]))  # the whole A>B pair: OPEN-ZP and KEEP both go, the global one stays
+    assert pair["must_find"] == ["OPEN-GLOBAL"] and pair["must_not_flag"] == []
+    everything = grading.derive_key(make_config(*base, [cases[3]]))
+    assert everything["must_find"] == [] and everything["must_not_flag"] == [] and everything["must_find_concepts"] == {}
+    other_pair = grading.derive_key(make_config(*base, ["deactivate security policies from-zone A to-zone C"]))
+    assert other_pair["must_find"] == ["OPEN-GLOBAL", "OPEN-ZP"]
+
+
+def test_report_defangs_the_check_label():
+    finding = {"text": "t", "severity": "high", "check": "@everyone [x](http://e.example) `ls`", "cites": ["R"], "status": "verified"}
+    text = report.build_report({"run": graded_run(findings=[finding])}, now=1100.0)
+    assert "@everyone" not in text and "](" not in text and "http://" not in text and "`" not in text
