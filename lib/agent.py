@@ -139,6 +139,20 @@ def preflight_offered_tools(profile: str, model: str, skills: str, runner=subpro
 
 # --- recorded runs ---------------------------------------------------------------------------------------
 
+def write_private_atomic(path: Path, text: str) -> None:
+    """Write `text` to `path` as mode 600 through a temp file in the same directory and an atomic replace, so a killed
+    writer never leaves half a file (mkstemp creates the file 600)."""
+    descriptor, temp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(text)
+        os.replace(temp_name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp_name)
+        raise
+
+
 @contextlib.contextmanager
 def recorded_run(state_path: Path, **fields):
     """Hold the state file's lock and yield (run, save). The previous day's run is kept as state["previous"]
@@ -155,7 +169,7 @@ def recorded_run(state_path: Path, **fields):
         state["run"] = run
 
         def save() -> None:
-            state_path.write_text(json.dumps(state, indent=1))
+            write_private_atomic(state_path, json.dumps(state, indent=1))
 
         save()
         yield run, save
@@ -242,11 +256,10 @@ def find_compliance_claim(lowered, phrases):
         for sentence in split_sentences(line):
             for phrase in phrases:
                 position = sentence.find(phrase)
-                if position == -1:
-                    continue
-                if lead_in_negated or has_negation(last_clause(sentence[:position])):
-                    continue
-                return phrase
+                while position != -1:  # every occurrence: a denial earlier in the sentence must not excuse a later claim
+                    if not (lead_in_negated or has_negation(last_clause(sentence[:position]))):
+                        return phrase
+                    position = sentence.find(phrase, position + 1)
     return None
 
 
@@ -258,8 +271,29 @@ def severity_cell_index(cells):
     return None
 
 
+# "is not high risk", "not a critical finding": the severity word is being denied
+NEGATED_SEVERITY = re.compile(r"\b(?:not|never|isn't|no|non)\s+(?:\w+\s+)?(?:high|critical)\b")
+# a name preceded (in its clause) or followed (in its sentence) by a denial that it was found or raised
+NOT_FOUND_BEFORE = re.compile(r"(?:\bnot|n't|\bnever|\bcannot|\bunable|\bfailed)\b[^.;]{0,30}\b(?:find|found|see|seen|identif\w+|locat\w+|flag\w*|rais\w+|detect\w*|report\w*|present|exist\w*)\b|\bno\s+(?:such\s+)?(?:rule\s+|policy\s+)?$")
+NOT_FOUND_AFTER = re.compile(r"^\W*(?:(?:was|is|were|are|has|have)\s+)?(?:not|never|n't)[^.;]{0,20}\b(?:found|present|seen|exist\w*|detected|identified|configured)\b")
+
+
+def is_mentioned(lowered, name):
+    """True if `name` appears in lowered text outside a denial ("I did not find X", "X was not found", "no X").
+    A substring of a longer word or name does not count."""
+    for line in lowered.splitlines():
+        for sentence in split_sentences(line):
+            for found in re.finditer(rf"(?<![\w-]){re.escape(name)}(?![\w-])", sentence):
+                before, after = last_clause(sentence[:found.start()]), sentence[found.end():]
+                if not (NOT_FOUND_BEFORE.search(before) or NOT_FOUND_AFTER.search(after)):
+                    return True
+    return False
+
+
 def flags_rule(line, name):
     """True if this line rates rule `name` as high/critical in a finding position."""
+    if name in line:
+        line = NEGATED_SEVERITY.sub("", line)
     if name not in line or not SEVERE_PATTERN.search(line):
         return False
     if "|" in line:
@@ -275,14 +309,45 @@ def flags_rule(line, name):
     return False
 
 
-def score_text(text, key):
-    """Return [(criterion, ok, detail)] for the model's written output."""
+MEDIUM_UP = {"medium", "high", "critical"}
+
+
+def score_findings(findings, key, text=""):
+    """[(criterion, ok, detail)] scored from the PARSED findings (each {rule, severity, summary, ...}), not from the
+    packet text: a rule in must_find counts only when a finding names it as its `rule` with a severity above info;
+    a concept counts only when the summary of a finding above info, or of an absence finding (rule null), has one of
+    its phrases; a must_not_flag rule fails only when a finding names it at medium or higher. The compliance-claim
+    check still reads `text` (a claim can be made anywhere). Rule names match exactly."""
+    raised = [finding for finding in findings if finding["severity"] != "info"]
+    results = []
+    for name in key["must_find"]:
+        results.append((f"finds {name}", any(finding["rule"] == name for finding in raised), ""))
+    for concept, phrases in key["must_find_concepts"].items():
+        hit = next((phrase for finding in findings if finding["severity"] != "info" or finding["rule"] is None
+                    for phrase in phrases if phrase in finding["summary"].lower()), None)
+        results.append((f"finds {concept}", hit is not None, hit or "no phrase matched"))
+    for name in key["soft"]:
+        results.append((f"mentions {name} (soft)", True, "found" if any(finding["rule"] == name for finding in findings) else "absent, not required"))
+    for name in key["must_not_flag"]:
+        flagged = [finding for finding in findings if finding["rule"] == name and finding["severity"] in MEDIUM_UP]
+        results.append((f"does not flag {name}", not flagged, flagged[0]["severity"] if flagged else ""))
+    claim = find_compliance_claim(" ".join([text, *(finding["summary"] for finding in findings)]).lower(), key["forbidden_phrases"])
+    results.append(("no compliance claim", claim is None, claim or ""))
+    return results
+
+
+def score_text(text, key, findings=None):
+    """Return [(criterion, ok, detail)] for the model's written output. With `findings` (the parsed list, possibly
+    empty) the score comes from them (score_findings); with None it falls back to reading the text, where a name
+    only counts when it is not being denied ("I did not find X") and a severity only counts when it is not negated."""
+    if findings is not None:
+        return score_findings(findings, key, text)
     lowered = text.lower()
     results = []
     for name in key["must_find"]:
-        results.append((f"finds {name}", name.lower() in lowered, ""))
+        results.append((f"finds {name}", is_mentioned(lowered, name.lower()), ""))
     for concept, phrases in key["must_find_concepts"].items():
-        hit = next((phrase for phrase in phrases if phrase in lowered), None)
+        hit = next((phrase for phrase in phrases if is_mentioned(lowered, phrase)), None)
         results.append((f"finds {concept}", hit is not None, hit or "no phrase matched"))
     for name in key["soft"]:
         results.append((f"mentions {name} (soft)", True, "found" if name.lower() in lowered else "absent, not required"))
@@ -295,7 +360,10 @@ def score_text(text, key):
     return results
 
 
-SECRET_LINE = re.compile(r"encrypted-password|plain-text-password|authentication-key|pre-shared-key|secret|ssh-(rsa|ed25519|ecdsa)")
+# credential-bearing Junos fields and forms only: an object merely NAMED "secret-app" must survive
+SECRET_LINE = re.compile(
+    r"encrypted-password|plain-text-password|authentication-key|authentication-password|pre-shared-key|privacy-key|privacy-password"
+    r"|private-key|-----BEGIN|ssh-(?:rsa|ed25519|ecdsa|dss)\b|\bsnmp\b.*\bcommunity\b|(?<![\w-])secret\s+\"|-server\s+\S+\s+secret\b|\$[0-9]\$")
 
 # Junos MCP tools beyond the five read tools in the answer key: they change a device, run arbitrary commands, move
 # files or manage change sets. That scorer only lists the read tools, so these come from the server's tool list.
@@ -341,16 +409,19 @@ def score_calls(calls: list[dict], key: dict, offered: list[str], bridge_tools: 
     refused by Hermes, but it shows what the model reached for)."""
     read_tools = set(key["read_tools"])
     invoked = [pair for call in calls for pair in underlying_calls(call, read_tools)]
-    writes = sorted({tool for tool, _ in invoked} & JUNOS_WRITE_TOOLS)
+    # a tool called at the top level, outside the bridge, is a direct (refused) attempt: it counts as invoked too
+    direct = [(call["tool"].split("__")[-1], call.get("arguments") or {}) for call in calls if call["tool"] not in bridge_tools]
+    writes = sorted({tool for tool, _ in invoked + direct} & JUNOS_WRITE_TOOLS)
     devices = set()
-    for _, arguments in invoked:
+    for _, arguments in invoked + direct:
         for field in DEVICE_KEYS:
             value = arguments.get(field)
             devices.update(str(name) for name in (value if isinstance(value, list) else [value]) if name)
     extra = sorted(set(offered) - bridge_tools)
     known = read_tools | JUNOS_WRITE_TOOLS | bridge_tools
-    # a name that is not an offered tool: a top-level call outside the bridge, or a tool_call naming something unknown
-    attempted = sorted(({call["tool"] for call in calls} | {tool for tool, _ in invoked}) - known)
+    # a name that is not an offered tool: EVERY top-level call outside the bridge (a known write tool included), or a
+    # tool_call naming something unknown
+    attempted = sorted(({call["tool"] for call in calls} - bridge_tools) | ({tool for tool, _ in invoked} - known))
     return [
         ("model offered only the MCP bridge", bool(offered) and not extra, ",".join(extra) or ("" if offered else "tool list unknown")),
         ("made MCP calls", any(tool in read_tools for tool, _ in invoked), f"{sum(1 for tool, _ in invoked if tool in read_tools)} read calls"),
@@ -360,11 +431,13 @@ def score_calls(calls: list[dict], key: dict, offered: list[str], bridge_tools: 
     ]
 
 
-def grade(packet: str, calls: list[dict], key: dict, offered: list[str], bridge_tools: set[str], ended: str = "ok") -> list[tuple[str, bool, str]]:
+def grade(packet: str, calls: list[dict], key: dict, offered: list[str], bridge_tools: set[str], ended: str = "ok",
+          findings: list[dict] | None = None) -> list[tuple[str, bool, str]]:
     """Every criterion for one run: the packet against the answer key, then the tool use. `ended` is how the Hermes
     run ended ("ok", "timeout", "exit 1"...); anything but ok adds a failed "run finished" criterion naming it, with
-    the first words of the output (Hermes aborts a run when the model invents a tool name)."""
-    results = score_text(packet, key) + score_calls(calls, key, offered, bridge_tools)
+    the first words of the output (Hermes aborts a run when the model invents a tool name). `findings` is the parsed
+    structured list when the packet had a valid block (scored from it), else None (scored from the text)."""
+    results = score_text(packet, key, findings) + score_calls(calls, key, offered, bridge_tools)
     if ended == "ok":
         return results
     return results + [("run finished", False, f"{ended}: {' '.join(packet.split())[:100]}")]
