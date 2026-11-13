@@ -335,3 +335,43 @@ def test_model_fields_that_look_like_credentials_are_withheld():
     assert changes[3]["effect"] == "e" and changes[3]["evidence"]
     text = report.build_report({"run": run_record(changes=changes)}, now=1100.0)
     assert "evidence withheld (looked like a credential)" in text and "$9$" not in text and "encrypted-password" not in text
+
+
+# --- second review round ---------------------------------------------------------------------------------
+
+def test_key_material_lines_are_never_kept_but_object_names_are():
+    material = ['set security pki ca-profile P private-key "abc"', "-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN CERTIFICATE-----",
+                'set system login user u authentication ssh-rsa "ssh-rsa AAAAB3"', 'set system login user u authentication ssh-ed25519 "k"']
+    assert grading.normalise("\n".join(material)) == []
+    names = ["set security policies global policy authentication-password-reset then permit", "set security policies global policy allow-private-key-service then permit",
+             "set security zones security-zone ssh-rsa-hosts"]
+    assert grading.normalise("\n".join(names)) == names
+
+
+def test_model_text_is_checked_for_credentials_in_any_case():
+    for text in ("SNMP community private added", 'Secret "hunter2" configured', "PRE-SHARED-KEY ascii-text changed"):
+        assert grading.looks_like_credential(text), text
+    changes, _ = grading.structured_changes(block(change(effect="SNMP community private added"), change(evidence='Secret "hunter2" configured'), change()), DIFF)
+    assert [c["withheld"] for c in changes] == [True, True, False]
+    assert "hunter2" not in json.dumps(changes) and "private" not in changes[0]["effect"]
+
+
+def test_the_raw_model_output_files_and_calls_are_scrubbed_before_the_first_save(tmp_path, monkeypatch):
+    import agent
+    real = load("drift_collect_scrub", REPO / "bots" / "driftagent" / "collect.py")
+    secret = 'set security ike policy P pre-shared-key ascii-text "hunter2"'
+    packet = block(change(effect='Secret "hunter2" configured')) + f"\nthe diff shows {secret}\n"
+    calls = GOOD_CALLS + [{"tool": "tool_call", "arguments": {"name": "get_junos_config", "arguments": {"note": secret}}}]
+    monkeypatch.setattr(real.agent, "preflight_offered_tools", lambda *a: list(BRIDGE))
+    monkeypatch.setattr(real.agent, "run_hermes", lambda *a: {"status": "ok", "output": packet, "files": {"n.txt": secret}, "session_id": "s1", "seconds": 1})
+    monkeypatch.setattr(real.agent, "session_facts", lambda *a: {"tools_offered": list(BRIDGE), "calls": calls})
+    run, saved = {"phases": {}}, []
+    real.run_agent_and_grade(run, lambda: saved.append(json.dumps(run)), DIFF)
+    assert saved and not any("hunter2" in text for text in saved) and "hunter2" not in json.dumps(run)
+    assert agent.WITHHELD in run["packet"] and run["changes"][0]["withheld"] is True and run["grade"]
+
+
+def test_the_state_file_and_its_lock_are_mode_600(tmp_path, monkeypatch):
+    run = setup_collect(monkeypatch, tmp_path, golden="\n".join(grading.normalise(LIVE)))
+    collect.main()
+    assert {path.suffix: stat.S_IMODE(path.stat().st_mode) for path in tmp_path.glob("state.*")} == {".json": 0o600, ".lock": 0o600}

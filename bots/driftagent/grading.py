@@ -6,8 +6,8 @@ Shortcut: configs are compared as sets of lines, so a pure reorder (policy order
 a line the server redacts or that carries a credential is dropped from both sides, so a rotated secret is invisible.
 `deactivate ...` lines are compared like `set` lines (a deactivated policy is a change). Policies are keyed
 `from-zone/to-zone/name` (or `global/name`) and address-book entries `book/name`, so equal names in two places are two objects.
-Credential lines are matched by field (`pre-shared-key`, `secret "..."`, `snmp ... community`...), not by a bare word, so an
-object merely named `allow-secret-server` is compared normally. This is a local copy of lib/agent.py's SECRET_LINE job."""
+Credential lines are matched by lib/agent.py's SECRET_LINE: a field token followed by a value, key material, `secret "..."`, `snmp ...
+community`, not a bare word, so an object merely named `allow-secret-server` is compared normally."""
 
 import os
 import re
@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
-from agent import strict_json_items  # noqa: E402
+from agent import SECRET_LINE, looks_like_credential, strict_json_items  # noqa: E402
 
 DEVICE = os.environ.get("DRIFTAGENT_DEVICE", "lab-vsrx")  # placeholder: name of your target device in the Junos MCP server
 READ_TOOLS = ["get_device_list", "get_router_list", "gather_device_facts", "get_junos_config", "junos_config_diff"]
@@ -37,29 +37,13 @@ ZONE_INTERFACE = re.compile(r"^security zones security-zone \S+ interfaces (\S+)
 INTERFACE = re.compile(r"^interfaces (\S+)(?: unit (\d+))?")
 
 
-# A credential-bearing field or form. Hyphen-bounded so `allow-secret-server` is a name, not a secret; a bare `secret` counts
-# only when a quoted, $-crypted or redacted value follows it.
-CREDENTIAL_LINE = re.compile(
-    r"(?<![\w-])(?:encrypted-password|plain-text-password|authentication-key|authentication-password|pre-shared-key|privacy-key|privacy-password)(?![\w-])"
-    r"|(?<![\w-])secret\s+(?:[\"$]|<redacted>)"
-    r"|(?<![\w-])snmp(?![\w-]).*?(?<![\w-])community(?:-name)?\s+\S"
-    r"|authentication ssh-(?:rsa|ed25519|ecdsa)")
-# what model text must not carry into a report: a credential field or form, a Junos crypt string, or a long base64/hex blob
-CREDENTIAL_TEXT = re.compile(CREDENTIAL_LINE.pattern + r"|\$\d\$\S|[A-Za-z0-9+/]{32,}={0,2}|(?<![\w-])[0-9A-Fa-f]{24,}(?![\w-])")
-
-
-def looks_like_credential(text: str) -> bool:
-    """True when model text contains something that looks like a credential (see CREDENTIAL_TEXT)."""
-    return bool(CREDENTIAL_TEXT.search(text or ""))
-
-
 def normalise(config_text: str) -> list[str]:
     """The comparable lines of a set-format config: whitespace-collapsed `set` and `deactivate` lines in order, without the version
     header, without anything that could hold a credential, redaction placeholders replaced by one fixed token, no repeats."""
     lines, seen = [], set()
     for raw in config_text.splitlines():
         line = " ".join(PLACEHOLDER.sub("<redacted>", raw).split())
-        if not line.startswith(("set ", "deactivate ")) or line.startswith("set version ") or CREDENTIAL_LINE.search(line) or line in seen:
+        if not line.startswith(("set ", "deactivate ")) or line.startswith("set version ") or SECRET_LINE.search(line) or line in seen:
             continue
         seen.add(line)
         lines.append(line)

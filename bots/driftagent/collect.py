@@ -87,11 +87,13 @@ def run_agent_and_grade(run: dict, save, diff: dict) -> None:
     save()
     result = agent.run_hermes(PROFILE, MODEL, SKILLS, build_prompt(diff), AGENT_TIMEOUT)
     timed(run, "agent", started)
-    run.update(agent_status=result["status"], packet=result["output"][:30000], files=result["files"], session_id=result["session_id"])
+    # nothing credential-looking reaches the state file: the stored copies are scrubbed, grading below reads the raw ones
+    run.update(agent_status=result["status"], packet=agent.scrub_text(result["output"][:30000]), files=agent.scrub_json(result["files"]),
+               session_id=result["session_id"])
     if not result["session_id"]:  # Hermes never started a session: nothing to grade
         raise RuntimeError(f"hermes run did not start: {result['status']}")
     facts = agent.session_facts(PROFILE, result["session_id"])
-    run.update(tools_offered=facts["tools_offered"], calls=facts["calls"])
+    run.update(tools_offered=facts["tools_offered"], calls=agent.scrub_json(facts["calls"]))
     save()
     started = time.time()
     packet = "\n\n".join([result["output"], *result["files"].values()])

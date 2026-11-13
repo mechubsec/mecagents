@@ -32,14 +32,16 @@ Against a **derived key**: every policy the diff touched must be named, as `from
 so the same name in two zone pairs is two objects and one mention cannot cover both; address-book entries are
 `book/name`. Plus the tool-use criteria.
 Configs are compared as sets of lines, so a pure reorder is not drift, and lines holding a credential field
-(`encrypted-password`, `pre-shared-key`, `secret "..."`, `authentication-key`, SNMP community...) are dropped from both
-sides, so a rotated secret is invisible. A name that merely contains the word `secret` is compared normally.
+(`encrypted-password`, `pre-shared-key`, `private-key`, `secret "..."`, `authentication-key`, SNMP community...) or key material
+(PEM `-----BEGIN`, SSH keys) are dropped from both sides, so a rotated secret is invisible. A field counts as a whole token followed by
+a value, so a name that merely contains `secret` or `authentication-password-reset` is compared normally.
 
 ## Credentials in model text
 
 The model sees the full config. Any `object`, `effect` or `evidence` it returns that looks like a credential (a Junos
 `$9$`/`$6$` string, a credential field, a long base64 or hex blob) is replaced before storage; the report says
-"evidence withheld (looked like a credential)". The heuristic can miss a plain-text secret in prose.
+"evidence withheld (looked like a credential)"; the check ignores case. The heuristic can miss a plain-text secret in prose.
+Nothing credential-looking from the model (its output, any files, its tool-call arguments) is written to the state file: those lines are replaced by a placeholder before the first save, while grading reads the original. State files and their lock are mode 600.
 
 ## Configuration
 
