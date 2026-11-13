@@ -1,9 +1,9 @@
 """Commit-notification receiver: a commit on the target device starts a pcicomplyagent run.
 
 POST /commit from ALLOWED_SOURCE with the shared secret header starts
-pcicomplyagent-triggered.service (debounced). While the scheduled weekly collect is running the start is deferred: the
-notice is answered 202, kept (the latest one), and the triggered unit starts once the scheduled collect has finished,
-so the two never queue on the state lock. The body is never acted on: it is only
+pcicomplyagent-triggered.service. A notice that cannot start a run at once (the scheduled weekly collect is running,
+a triggered run is running, or the last start was under a minute ago) is answered 202 and kept (the latest one): one
+more run starts once both units are idle, so no commit goes unreviewed and the units never queue on the state lock. The body is never acted on: it is only
 logged, and (device, user) are kept, length-capped and defanged, as a small note file the run
 may show as "committed by ..." (untrusted: the device's own words).
 """
@@ -31,7 +31,7 @@ MAX_BODY = 512
 DEBOUNCE_SECONDS = 60
 
 _last_start = 0.0
-_deferred: dict | None = None  # the note of a commit notice waiting for the scheduled collect to finish
+_deferred: dict | None = None  # the note of a commit notice waiting for both units to be idle
 
 
 def source_ok(client_ip: str, allowed: str = ALLOWED_SOURCE) -> bool:
@@ -105,16 +105,19 @@ def start_run(note: dict) -> None:
 
 
 def wait_then_start() -> None:
-    """Wait for the scheduled collect to finish, then start the one deferred run (with the latest note). Whatever happens,
-    the deferral is cleared so a later notice can start a new waiter."""
+    """Wait until neither the scheduled collect nor a triggered run is active and the debounce has passed, then start the
+    one deferred run (with the latest note). The deferral is handed over before the start: a notice that arrives from
+    then on belongs to a new waiter, and this one never touches it again. A failed wait clears the deferral."""
     global _deferred
     try:
-        while unit_active(SCHEDULED_UNIT):
+        while unit_active(SCHEDULED_UNIT) or unit_active(UNIT) or time.time() - _last_start < DEBOUNCE_SECONDS:
             time.sleep(POLL_SECONDS)
-        log("scheduled collect finished: starting the deferred run")
-        start_run(_deferred)
-    finally:
+    except BaseException:
         _deferred = None
+        raise
+    log("units idle: starting the deferred run")
+    note, _deferred = _deferred, None
+    start_run(note)
 
 
 def defer(note: dict) -> None:
@@ -143,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self) -> None:
-        """Validate, debounce, start (or defer) the run, answer 202."""
+        """Validate, start the run or keep the notice for one later run, answer 202."""
         client = self.client_address[0]
         if self.path != "/commit":
             return self._reply(404)
@@ -160,7 +163,7 @@ class Handler(BaseHTTPRequestHandler):
         log(f"commit notice from {client}: {defang(body)!r} -> {verdict}")
         if verdict == "start":
             start_run(parse_note(body, time.time()))
-        elif verdict == "deferred":
+        else:  # running, deferred or debounced: one more run once the units are idle
             defer(parse_note(body, time.time()))
         self._reply(202)
 

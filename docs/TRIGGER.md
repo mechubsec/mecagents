@@ -46,10 +46,13 @@ environment variables: `TRIGGER_BIND` (default `192.0.2.10`), `TRIGGER_PORT` (`8
 - **Shared secret**: the `X-Trigger-Secret` header, compared in constant time; an empty secret file never matches.
 - **Body ignored**: capped at 512 bytes and never acted on. Only `device=` and `user=` are kept, each capped at 32
   printable characters, in a small note file the run may show as "by <user>". It is the device's own text: untrusted.
-- **Debounce**: a notice within 60 s of the last start, or while the unit runs, starts nothing (the reply is still 202).
+- **Debounce**: a notice within 60 s of the last start, or while the unit runs, starts nothing at once (the reply is still 202).
+  It is kept (the latest one wins) and one more run starts when the running one has finished, so the last commit is always reviewed.
 - **Deferral**: while the weekly collect (`labbot@pcicomplyagent.collect.service`) is running, the notice is kept (the latest one
   wins) and the triggered unit starts when the weekly collect has finished: one run, however many notices. Without this the
   triggered collect would queue on the state lock and might time out.
+- **Ordering**: the weekly collect and the report carry `After=pcicomplyagent-triggered.service` (shipped drop-ins), so a
+  triggered run that started just before them finishes first; they wait in systemd's queue, which does not use up their time limit.
 
 Open the receiver's port in the host firewall for the device's address only, for example with `ufw`:
 `ufw allow from <device-address> to any port 8802 proto tcp`.
@@ -75,5 +78,5 @@ starts it.
 - A commit that changed nothing yields an empty diff; the report says no security policy changed.
 - When `junos_config_diff` is not available to the agent's token, the collect compares with the policy lines saved
   by the previous run and says so; if there is no previous run either, it says it could not tell what changed.
-- Debounce means two commits within a minute may produce one run; the diff is against rollback 1 only, so the first
-  commit's changes would be missed. Keep commits apart or read the device's commit history.
+- Several commits while a run is in progress produce one more run, not one each; its diff is against rollback 1 only, so
+  it shows the last commit's changes. Keep commits apart or read the device's commit history for the ones in between.

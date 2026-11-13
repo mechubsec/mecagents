@@ -69,6 +69,24 @@ def test_deferral_keeps_the_latest_note_and_starts_one_run_after_the_scheduled_c
     assert started == [{"user": "second"}] and receiver._deferred is None
 
 
+def test_a_notice_during_a_triggered_run_or_the_debounce_gets_its_own_run_afterwards(monkeypatch):
+    started, sleeps, clock = [], [], [1000.0]
+    monkeypatch.setattr(receiver, "_deferred", {"user": "second-commit"})
+    monkeypatch.setattr(receiver, "_last_start", 1010.0)
+    states = iter([True, True, False, False])  # the triggered unit is active for two polls
+    monkeypatch.setattr(receiver, "unit_active", lambda unit: unit == receiver.UNIT and next(states))
+    monkeypatch.setattr(receiver.time, "time", lambda: clock[0])
+    monkeypatch.setattr(receiver.time, "sleep", lambda seconds: (sleeps.append(seconds), clock.__setitem__(0, clock[0] + 30)))
+    def start_run(note):  # a third notice lands while the queued run is being started
+        started.append((note, receiver._deferred))
+        receiver._deferred = {"user": "third-commit"}
+    monkeypatch.setattr(receiver, "start_run", start_run)
+    receiver.wait_then_start()
+    assert started == [({"user": "second-commit"}, None)]  # handed over before the start
+    assert receiver._deferred == {"user": "third-commit"}  # and the later notice is not wiped by this waiter
+    assert len(sleeps) == 3  # two polls while the unit ran, one more for the rest of the 60 s debounce
+
+
 def test_start_run_stamps_the_note_now_and_starts_the_unit(tmp_path, monkeypatch):
     commands = []
     monkeypatch.setattr(receiver, "NOTE_FILE", tmp_path / "n.json")

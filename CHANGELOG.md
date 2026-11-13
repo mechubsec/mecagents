@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- pcicomplyagent trigger: a commit notice that arrives during a triggered run (or within the debounce) is kept and gets one more run afterwards, under its own note; it was dropped before.
+- pcicomplyagent: the weekly collect and the report are ordered after the triggered unit (new `after-triggered.conf` drop-ins), so a commit just before them no longer makes them wait on the state lock and use up their time limit. Copy the drop-ins and run `systemctl --user daemon-reload`.
+
 ## 0.0.3
 
 Still alpha quality. Needs mecbots 0.0.2 or later.

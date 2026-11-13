@@ -39,9 +39,6 @@
 
 ## Known issues (from review, not yet fixed)
 
-- **A commit just before the weekly run** starts the triggered run first; the weekly run then waits on the same
-  state lock and may use up its time limit.
-- **Two commits in quick succession** can be reported under the older commit's note (device and user).
 - **`driftagent` is still graded from the model's prose**, not from a findings list.
 - **`driftagent` reports a change to an SSH algorithm setting but the saved report withholds the line**, because
   the shared scrub still treats key-type names (`ssh-ed25519`) as key material. Read the device for the detail.

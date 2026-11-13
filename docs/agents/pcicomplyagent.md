@@ -81,7 +81,8 @@ considers a PCI rule problem`. The agent's packet follows as usual, with one ext
 code flagged in the commit. A triggered run always posts. The weekly run is unchanged apart from the grading above.
 A triggered run replaces an earlier run of the same day in the state file. If a commit arrives while the weekly collect is
 running, the receiver answers 202, keeps the latest notice and starts the triggered unit once the weekly collect has finished (one
-run, however many notices), so the two never queue on the state lock.
+run, however many notices), so the two never queue on the state lock. A commit during a triggered run is kept the same way and gets one more run afterwards. The weekly collect and
+the report are ordered after the triggered unit, so a commit just before them does not make them wait on the lock.
 
 Nothing credential-looking from the model (its output, any files, its tool-call arguments) is written to the state file: those lines are replaced by a placeholder before the first save, while grading reads the original. State files and their lock are mode 600.
 
