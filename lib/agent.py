@@ -72,6 +72,15 @@ def mcp_call_text(server_name: str, tool: str, arguments: dict) -> str:
 
 # --- Hermes one-shot -------------------------------------------------------------------------------------
 
+def as_arguments(value) -> dict:
+    """A tool call's arguments as a dict: a JSON object in a string is decoded; anything else (a list, a string that is not
+    an object, bad JSON, None) is {}. The model may invent a call with any shape: reading it must never raise."""
+    if isinstance(value, str):
+        with contextlib.suppress(ValueError):
+            value = json.loads(value)
+    return value if isinstance(value, dict) else {}
+
+
 def session_facts(profile: str, session_id: str) -> dict:
     """What a Hermes session was offered and did, from the profile's state.db: {tools_offered, calls}.
     calls is [{tool, arguments}] in order, as the model issued them."""
@@ -88,9 +97,7 @@ def session_facts(profile: str, session_id: str) -> dict:
                                  "and tool_calls is not null order by id", (session_id,)):
             for call in json.loads(raw):
                 function = call.get("function", call)
-                arguments = function.get("arguments", {})
-                calls.append({"tool": function.get("name", ""),
-                              "arguments": json.loads(arguments) if isinstance(arguments, str) and arguments else arguments or {}})
+                calls.append({"tool": function.get("name", ""), "arguments": as_arguments(function.get("arguments", {}))})
         return {"tools_offered": offered, "calls": calls}
     finally:
         db.close()
@@ -159,7 +166,7 @@ def recorded_run(state_path: Path, **fields):
     (a second run on the same day replaces today's). `run["complete"]` becomes true only when the block exits
     normally, so a collect killed halfway leaves a run the report calls incomplete."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(state_path.with_suffix(".lock"), "w") as lock:
+    with os.fdopen(os.open(state_path.with_suffix(".lock"), os.O_WRONLY | os.O_CREAT, 0o600), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         state = json.loads(state_path.read_text()) if state_path.exists() else {}
         today = time.strftime("%Y-%m-%d")
@@ -272,7 +279,7 @@ def severity_cell_index(cells):
 
 
 # "is not high risk", "not a critical finding": the severity word is being denied
-NEGATED_SEVERITY = re.compile(r"\b(?:not|never|isn't|no|non)\s+(?:\w+\s+)?(?:high|critical)\b")
+NEGATED_SEVERITY = re.compile(r"\b(?:not|never|isn't|no|non)[\s-]+(?:\w+\s+)?(?:high|critical)\b")
 # a name preceded (in its clause) or followed (in its sentence) by a denial that it was found or raised
 NOT_FOUND_BEFORE = re.compile(r"(?:\bnot|n't|\bnever|\bcannot|\bunable|\bfailed)\b[^.;]{0,30}\b(?:find|found|see|seen|identif\w+|locat\w+|flag\w*|rais\w+|detect\w*|report\w*|present|exist\w*)\b|\bno\s+(?:such\s+)?(?:rule\s+|policy\s+)?$")
 NOT_FOUND_AFTER = re.compile(r"^\W*(?:(?:was|is|were|are|has|have)\s+)?(?:not|never|n't)[^.;]{0,20}\b(?:found|present|seen|exist\w*|detected|identified|configured)\b")
@@ -360,10 +367,41 @@ def score_text(text, key, findings=None):
     return results
 
 
-# credential-bearing Junos fields and forms only: an object merely NAMED "secret-app" must survive
+# Credential-bearing Junos fields and forms. A field counts as a whole hierarchy token followed by a value, so an object merely
+# NAMED `secret-app` or `authentication-password-reset` survives; key material (private-key, PEM, SSH keys) always counts.
 SECRET_LINE = re.compile(
-    r"encrypted-password|plain-text-password|authentication-key|authentication-password|pre-shared-key|privacy-key|privacy-password"
-    r"|private-key|-----BEGIN|ssh-(?:rsa|ed25519|ecdsa|dss)\b|\bsnmp\b.*\bcommunity\b|(?<![\w-])secret\s+\"|-server\s+\S+\s+secret\b|\$[0-9]\$")
+    r"(?<![\w-])(?:encrypted-password|plain-text-password|authentication-key|authentication-password|pre-shared-key|privacy-key"
+    r"|privacy-password|private-key)\s+\S"
+    r"|-----BEGIN|(?<![\w-])ssh-(?:rsa|ed25519|ecdsa|dss)(?![\w-])"
+    r"|(?<![\w-])snmp(?![\w-]).*?(?<![\w-])community(?:-name)?\s+\S"
+    r"|(?<![\w-])secret\s+(?:[\"$]|<redacted>)|-server\s+\S+\s+secret(?![\w-])|\$[0-9]\$")
+# what model text must not carry into a report or a state file: the above (any case), a Junos crypt string, a long base64 or hex blob
+CREDENTIAL_TEXT = re.compile(SECRET_LINE.pattern + r"|[A-Za-z0-9+/]{32,}={0,2}|(?<![\w-])[0-9A-Fa-f]{24,}(?![\w-])", re.I)
+WITHHELD = "[line withheld: credential-like]"
+
+
+def looks_like_credential(text: str) -> bool:
+    """True when model text contains something that looks like a credential (see CREDENTIAL_TEXT), in any case, also when
+    it sits inside a JSON string (`secret \\"x\\"`)."""
+    text = text or ""
+    return bool(CREDENTIAL_TEXT.search(text) or CREDENTIAL_TEXT.search(text.replace('\\"', '"')))
+
+
+def scrub_text(text: str) -> str:
+    """`text` with every line that looks like a credential replaced by a placeholder: what may be stored from model output."""
+    return "\n".join(WITHHELD if looks_like_credential(line) else line for line in str(text).splitlines())
+
+
+def scrub_json(value):
+    """`value` (nested dicts, lists, strings) with every string passed through scrub_text; other values untouched."""
+    if isinstance(value, str):
+        return scrub_text(value)
+    if isinstance(value, list):
+        return [scrub_json(item) for item in value]
+    if isinstance(value, dict):
+        return {key: scrub_json(item) for key, item in value.items()}
+    return value
+
 
 # Junos MCP tools beyond the five read tools in the answer key: they change a device, run arbitrary commands, move
 # files or manage change sets. That scorer only lists the read tools, so these come from the server's tool list.
@@ -389,16 +427,14 @@ def underlying_calls(call: dict, read_tools: set[str]) -> list[tuple[str, dict]]
     """The MCP (tool, arguments) pairs one model call invoked; [] for a discovery call or a tool outside the bridge.
     Hermes defers MCP tools behind tool_call, either {name, arguments} or a batch {calls: [{name, arguments}]}; a
     server prefix (mcp__junos__) is dropped."""
-    tool, arguments = call["tool"], call.get("arguments") or {}
+    tool, arguments = call["tool"], as_arguments(call.get("arguments"))
     if tool != "tool_call":
         return []
     items = arguments["calls"] if isinstance(arguments.get("calls"), list) else [arguments]
     invoked = []
-    for item in items:
+    for item in map(as_arguments, items):
         name = str(item.get("name") or item.get("tool") or item.get("tool_name") or "")
-        inner = item.get("arguments") or item.get("args") or item.get("parameters") or {}
-        if isinstance(inner, str):
-            inner = json.loads(inner) if inner.strip().startswith("{") else {}
+        inner = as_arguments(item.get("arguments") or item.get("args") or item.get("parameters"))
         invoked.append((name.split("__")[-1], inner))  # drop the server prefix: mcp__junos__get_junos_config
     return invoked
 
@@ -410,7 +446,7 @@ def score_calls(calls: list[dict], key: dict, offered: list[str], bridge_tools: 
     read_tools = set(key["read_tools"])
     invoked = [pair for call in calls for pair in underlying_calls(call, read_tools)]
     # a tool called at the top level, outside the bridge, is a direct (refused) attempt: it counts as invoked too
-    direct = [(call["tool"].split("__")[-1], call.get("arguments") or {}) for call in calls if call["tool"] not in bridge_tools]
+    direct = [(call["tool"].split("__")[-1], as_arguments(call.get("arguments"))) for call in calls if call["tool"] not in bridge_tools]
     writes = sorted({tool for tool, _ in invoked + direct} & JUNOS_WRITE_TOOLS)
     devices = set()
     for _, arguments in invoked + direct:

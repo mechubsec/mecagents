@@ -202,10 +202,54 @@ def test_state_is_written_atomically_with_mode_600(tmp_path):
 
 def test_scrub_keeps_objects_merely_named_with_a_secret_word():
     keep = ["set security policies global policy secret-app then permit", "set applications application secret-service protocol tcp",
-            "set security address-book global address secret-net 10.0.0.0/24", "set policy-options community PARTNER members 65000:1"]
+            "set security address-book global address secret-net 198.51.100.0/24", "set policy-options community PARTNER members 65000:1"]
     assert agent.scrub_config("\n".join(keep)) == "\n".join(keep)
     drop = ['set system root-authentication encrypted-password "$6$abc"', 'set access radius-server 192.0.2.1 secret "x"',
             'set security ike policy p pre-shared-key ascii-text "$9$abc"', "set snmp community public authorization read-only",
             "set snmp v3 usm local-engine user u authentication-sha authentication-password x", "set system login user u authentication ssh-ed25519 \"ssh-ed25519 AAA\"",
             "set interfaces ge-0/0/0 description $9$QzF"]
     assert agent.scrub_config("\n".join(drop)) == ""
+
+
+# --- second review round ---------------------------------------------------------------------------------
+
+def test_credential_fields_match_whole_tokens_followed_by_a_value():
+    names = ["set security policies global policy authentication-password-reset match source-address H",
+             "set security policies global policy allow-private-key-service match source-address H",
+             "set security address-book global address secret-app 198.51.100.7/32", "set security policies global policy allow-snmp-community-ro then permit"]
+    assert not any(agent.SECRET_LINE.search(line) for line in names)
+    assert agent.scrub_config("\n".join(names)) == "\n".join(names)
+    secrets = ['set system login user u authentication encrypted-password "$6$x"', 'set security pki x private-key "abc"', "-----" + "BEGIN PRIVATE KEY-----",
+               'set system login user u authentication ssh-ed25519 "ssh-ed25519 AAAA"', 'set snmp community public authorization read-only', 'set protocols bgp group G authentication-key "$9$k"',
+               'set system radius-server 198.51.100.1 secret "x"']
+    assert all(agent.SECRET_LINE.search(line) for line in secrets)
+
+
+def test_model_text_credentials_are_found_in_any_case_and_scrubbed_before_storing():
+    for text in ('SNMP community private added', 'Secret "hunter2" configured', 'Pre-Shared-Key ascii-text "x"', "-----BEGIN RSA PRIVATE KEY-----"):
+        assert agent.looks_like_credential(text), text
+    assert not agent.looks_like_credential("policy ALLOW-WEB lost logging")
+    kept = agent.scrub_json({"a": "fine\nSecret \"hunter2\" configured\nfine too", "b": [{"c": "SNMP community private"}], "n": 3})
+    assert kept == {"a": f"fine\n{agent.WITHHELD}\nfine too", "b": [{"c": agent.WITHHELD}], "n": 3}
+
+
+def test_an_invented_call_with_non_object_arguments_never_raises():
+    assert agent.as_arguments('{"a": 1}') == {"a": 1}
+    assert all(agent.as_arguments(value) == {} for value in (["x"], "text", "{bad", None, 3, "[1]"))
+    calls = [{"tool": "get_junos_config", "arguments": ["x"]}, {"tool": "write_file", "arguments": "not json"}, {"tool": "tool_call", "arguments": ["a"]},
+             {"tool": "tool_call", "arguments": {"calls": ["x", {"name": "get_junos_config", "arguments": [1]}, {"name": "get_junos_config", "arguments": "[2]"}]}}]
+    results = named(agent.score_calls(calls, KEY, ["tool_call"], BRIDGE))
+    assert results["no attempts at tools it was not offered"][0] is False and "write_file" in results["no attempts at tools it was not offered"][1]
+    assert results["made MCP calls"][0] is True
+
+
+def test_non_critical_is_not_a_critical_rating_in_the_text_fallback():
+    assert named(agent.score_text("OKRULE is non-critical", KEY))["does not flag OKRULE"][0] is True
+    assert named(agent.score_text("OKRULE is non critical", KEY))["does not flag OKRULE"][0] is True
+    assert named(agent.score_text("OKRULE is critical", KEY))["does not flag OKRULE"][0] is False
+
+
+def test_the_lock_beside_a_state_file_is_mode_600(tmp_path):
+    with agent.recorded_run(tmp_path / "s.json"):
+        pass
+    assert {path.suffix: path.stat().st_mode & 0o777 for path in tmp_path.iterdir()} == {".json": 0o600, ".lock": 0o600}
