@@ -36,3 +36,17 @@
   this release needs) scrubs Discord text and keeps full reports local; check its redact list covers your
   devices before pointing agents at a shared server.
 - **Do not put a self-hosted CI runner on a repo that may go public.** A pull request can run code on it.
+
+## Known issues (from review, not yet fixed)
+
+- **A commit just before the weekly run** starts the triggered run first; the weekly run then waits on the same
+  state lock and may use up its time limit.
+- **Two commits in quick succession** can be reported under the older commit's note (device and user).
+- **`bpcheckagent`: a permit whose only sub-statement is deactivated** can be dropped from the derived key, and a
+  single deactivated member of a bracketed list is not handled.
+- **`driftagent` drops lines that name SSH key algorithms** as if they were key material, so a change to them is
+  not reported as drift. It is also still graded from the model's prose, not from a findings list.
+- **`socagent`'s evidence window ends slightly before socbot's own queries ran**, so the alert that caused an
+  escalation can fall just outside it and the verdict reads as unsupported.
+- **The whole-record scrub is broad**: a value under any key containing "token" or "secret", and any run of 32 or
+  more base64-like characters, is withheld from saved runs and reports, credential or not.
