@@ -137,5 +137,8 @@ After the fixture was cleaned up and the key was derived from the device (same m
 | weekly-style, clean device | 7 of 8; tried `skill_view` | — |
 | triggered mode, after a commit that added an any/any permit from the untrusted zone into the cardholder zone | code flagged the new policy from the commit diff; the agent named it as critical; 10 of 10 | 105 s, start to posted report |
 
-In the last run the event script's notice did not reach the receiver (the host firewall was closed), so the triggered
-unit was started by hand; the device-to-receiver hop is the one part of the chain this page has not measured.
+In that run the event script's notice did not reach the receiver (the host firewall was closed), so the triggered
+unit was started by hand. With the port opened for the device's address, the same commit was repeated: the device's
+notice started the run with nobody touching the host, and the report posted about 100 s after the commit (flagged from
+the diff; 9 of 10). The notice names the committer by asking the device for its newest commit entry, because an event
+script has no commit context of its own.

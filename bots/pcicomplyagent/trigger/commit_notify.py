@@ -10,9 +10,10 @@ SECRET = "@@SECRET@@"  # substituted at transfer time
 DEVICE = "lab-vsrx"
 
 try:
-    try:
-        from junos import Junos_Context
-        who = Junos_Context.get("user-name", "?")
+    try:  # an event script has no commit context, so ask the device who made the newest commit
+        from jnpr.junos import Device
+        with Device() as dev:
+            who = dev.rpc.get_commit_information().findtext("commit-history/user", "?").strip() or "?"
     except Exception:
         who = "?"
     req = urllib.request.Request(URL, data=("device=%s user=%s" % (DEVICE, who)).encode(),
