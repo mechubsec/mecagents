@@ -26,6 +26,9 @@ real firewall skills and calls an MCP server itself. Three rules contain it: a *
 one device, **no other tools** for the model (proved before every run), and **code that checks every finding**
 before it is reported.
 
+**Discord is not sovereign.** It is a cloud service, used here only as the exit point for scrubbed reports;
+the full report stays on your machine. A self-hosted push option ([ntfy](https://ntfy.sh)) is planned.
+
 ## Install
 
 Needs Linux with systemd, Python 3.11+, PyYAML, [Ollama](https://ollama.com), [Hermes Agent](https://github.com/NousResearch/hermes-agent) and a Junos MCP server.
