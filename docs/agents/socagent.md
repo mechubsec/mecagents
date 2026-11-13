@@ -22,8 +22,12 @@ this queue; see [VERSIONING](../VERSIONING.md).
 ## How the verdict is checked
 
 For each item code first fetches the item's own SSDF rows with its own token. Every entity the verdict cites is
-marked **seen** or **not seen** in those rows (exact, case-insensitive). A verdict where nothing is seen is
-**unsupported**. An entity the model reached through a tool code did not re-run reads "not seen" even if true.
+marked **seen** or **not seen** against the *identity* fields of those rows only (addresses, firewall or observer
+names, signature and rule names; exact, case-insensitive), so citing `high` or `true` supports nothing. The fetch uses
+the 24 h window that ended at the queue's `at` timestamp (absolute), the window `socbot` looked at, not "the last 24 h".
+Evidence whose `tool` is not on the allow-list, or that the recorded session never called, counts for nothing. A verdict
+where nothing is seen is **unsupported**. An entity the model reached through a tool code did not re-run reads "not seen"
+even if true.
 
 ## How it is graded
 
@@ -43,7 +47,7 @@ one cited entity seen.
 
 ## Schedule
 
-Collect daily 07:40 (after `socbot`), report daily 08:20. Posts only when something was escalated, or to say the
+Collect daily 10 minutes after `socbot`'s timer, report 50 minutes after the collect. Posts only when something was escalated, or to say the
 collect is missing or failed.
 
 ## Measured (November 2026)

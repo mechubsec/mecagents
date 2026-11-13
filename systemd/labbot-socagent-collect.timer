@@ -2,7 +2,7 @@
 Description=labbots: socagent collect (investigates what socbot escalated; a model runs only when something was)
 
 [Timer]
-OnCalendar=*-*-* 07:40:00
+OnCalendar=*-*-* 09:40:00
 Persistent=true
 Unit=labbot@socagent.collect.service
 

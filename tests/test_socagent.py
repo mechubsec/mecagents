@@ -117,7 +117,7 @@ def test_valid_verdict_parses_lowercased_and_capped():
     verdict, note = grading.parse_verdict(verdict_block(verdict="Suspicious", confidence="HIGH", summary="x" * 999, next_step="y" * 999), ITEM["id"])
     assert note == "" and verdict["verdict"] == "suspicious" and verdict["confidence"] == "high"
     assert len(verdict["summary"]) == 400 and len(verdict["next_step"]) == 200 and verdict["evidence"][0]["entities"] == ["192.0.2.1", "bad-sig", "unseen-fw"]
-    many = verdict_block(evidence=[{"tool": "t", "fact": "f", "entities": [str(n) for n in range(20)]}] * 20)
+    many = verdict_block(evidence=[{"tool": "recent_alerts", "fact": "f", "entities": [str(n) for n in range(20)]}] * 20)
     capped, _ = grading.parse_verdict(many, ITEM["id"])
     assert len(capped["evidence"]) == grading.MAX_EVIDENCE and len(capped["evidence"][0]["entities"]) == grading.MAX_ENTITIES
 
@@ -127,8 +127,8 @@ def test_invalid_blocks_are_refused_with_a_reason():
     cases = [("no block at all", "no ```json"), ("```json\n{x\n```", "invalid JSON"), ("```json\n[1]\n```", "exactly the keys"),
              (verdict_block(item="9-other"), "not 1-new-high-alert"), (verdict_block(verdict="safe"), "verdict is"), (verdict_block(confidence="certain"), "confidence is"),
              (verdict_block(summary=5), "summary"), (verdict_block(next_step=None), "next_step"), (verdict_block(evidence="x"), "not a list"),
-             (verdict_block(evidence=[{"tool": "t"}]), "evidence 1"), (verdict_block(evidence=[{"tool": "t", "fact": "f", "entities": "ip"}]), "wrong type"),
-             (verdict_block(evidence=[{"tool": "t", "fact": "f", "entities": [5]}]), "wrong type"), (verdict_block(evidence=[{"tool": "t", "fact": "f", "entities": [" "]}]), "wrong type"),
+             (verdict_block(evidence=[{"tool": "recent_alerts"}]), "evidence 1"), (verdict_block(evidence=[{"tool": "recent_alerts", "fact": "f", "entities": "ip"}]), "wrong type"),
+             (verdict_block(evidence=[{"tool": "recent_alerts", "fact": "f", "entities": [5]}]), "wrong type"), (verdict_block(evidence=[{"tool": "recent_alerts", "fact": "f", "entities": [" "]}]), "wrong type"),
              ("```json\n" + json.dumps({**good, "extra": 1}) + "\n```", "exactly the keys")]
     for packet, reason in cases:
         verdict, note = grading.parse_verdict(packet, ITEM["id"])
@@ -155,16 +155,16 @@ ALERT_ROWS = {"rows": [{"signature": wrapped("bad-sig"), "observer": "fw1", "sou
 def test_entities_are_marked_seen_or_not_seen_case_insensitively():
     values: set = set()
     for row in grading.relevant_rows("new-high-alert", ITEM["facts"], [ALERT_ROWS]):
-        grading.flatten(row, values)
+        values |= grading.identity_values(row)
     assert "192.0.2.1" in values and "203.0.113.9" not in values and "203.0.113.8" not in values  # only that signature on that observer
-    verdict, _ = grading.parse_verdict(verdict_block(evidence=[{"tool": "t", "fact": "f", "entities": ["192.0.2.1", "BAD-SIG", "unseen-fw"]}]), ITEM["id"])
+    verdict, _ = grading.parse_verdict(verdict_block(evidence=[{"tool": "recent_alerts", "fact": "f", "entities": ["192.0.2.1", "BAD-SIG", "unseen-fw"]}]), ITEM["id"])
     checked = grading.verify(verdict, values)
     assert [(entity["entity"], entity["seen"]) for entity in checked["evidence"][0]["entities"]] == [("192.0.2.1", True), ("BAD-SIG", True), ("unseen-fw", False)]
     assert checked["status"] == "supported" and checked["seen"] == 2 and checked["not_seen"] == 1
 
 
 def test_a_verdict_with_no_seen_entity_or_no_entity_is_unsupported():
-    for evidence in ([{"tool": "t", "fact": "f", "entities": ["missing"]}], [{"tool": "t", "fact": "f", "entities": []}], []):
+    for evidence in ([{"tool": "recent_alerts", "fact": "f", "entities": ["missing"]}], [{"tool": "recent_alerts", "fact": "f", "entities": []}], []):
         verdict, _ = grading.parse_verdict(verdict_block(evidence=evidence), ITEM["id"])
         assert grading.verify(verdict, {"192.0.2.1"})["status"] == "unsupported"
 
@@ -184,12 +184,12 @@ def test_fetch_item_data_asks_the_right_tools_and_an_error_reply_raises():
         calls.append((tool, arguments.get("providers") or arguments.get("action")))
         return ALERT_ROWS if tool == "recent_alerts" else {"rows": [{"source_ip": "192.0.2.11", "rule_name": wrapped("Block")}]}
 
-    values, rows = collect.fetch_item_data(ITEM, call)
+    values, rows = collect.fetch_item_data(ITEM, NOW, call)
     assert calls == [("recent_alerts", provider) for provider in collect.ALERT_PROVIDERS] and rows == 3 and "192.0.2.1" in values
-    values, rows = collect.fetch_item_data({"kind": "deny-spike", "facts": {}}, call)
+    values, rows = collect.fetch_item_data({"kind": "deny-spike", "facts": {}}, NOW, call)
     assert [action for _, action in calls[3:]] == list(collect.DENY_ACTIONS) and "block" in values and "192.0.2.11" in values
     try:
-        collect.fetch_item_data({"kind": "firewall-quiet", "facts": {"firewall": "x"}}, lambda tool, arguments: {"error": "forbidden", "detail": "no"})
+        collect.fetch_item_data({"kind": "firewall-quiet", "facts": {"firewall": "x"}}, NOW, lambda tool, arguments: {"error": "forbidden", "detail": "no"})
         raise AssertionError("an error reply must not read as no data")
     except RuntimeError as exc:
         assert "forbidden" in str(exc)
@@ -224,28 +224,28 @@ def test_every_allow_listed_tool_is_a_read_tool():
 # --- investigate -----------------------------------------------------------------------------------------
 
 def stub_investigate(monkeypatch, packet, status="ok", session="s1", fetch=None):
-    monkeypatch.setattr(collect, "fetch_item_data", fetch or (lambda item: ({"192.0.2.1", "bad-sig"}, 3)))
+    monkeypatch.setattr(collect, "fetch_item_data", fetch or (lambda item, at: ({"192.0.2.1", "bad-sig"}, 3)))
     monkeypatch.setattr(collect.agent, "run_hermes", lambda *args: {"status": status, "output": packet, "files": {}, "session_id": session, "seconds": 1})
     monkeypatch.setattr(collect.agent, "session_facts", lambda *args: {"tools_offered": sorted(BRIDGE), "calls": GOOD_CALLS})
 
 
 def test_investigate_parses_verifies_and_grades(monkeypatch):
     stub_investigate(monkeypatch, verdict_block())
-    record = collect.investigate(ITEM)
+    record = collect.investigate(ITEM, NOW)
     assert record["outcome"] == "investigated" and record["passed"] is True and record["evidence_rows"] == 3
     assert record["verdict"]["seen"] == 2 and record["verdict"]["not_seen"] == 1 and record["verdict"]["status"] == "supported"
 
 
 def test_aborted_run_is_a_failed_run_and_missing_block_is_graded(monkeypatch):
     stub_investigate(monkeypatch, "Error: invalid tool", status="exit 1")
-    record = collect.investigate(ITEM)
+    record = collect.investigate(ITEM, NOW)
     assert record["passed"] is False and record["verdict"] is None and any(name == "run finished" and not ok for name, ok, _ in record["grade"])
 
 
 def test_unreachable_ssdf_is_could_not_run_and_no_model_runs(monkeypatch):
     no_model(monkeypatch)
-    monkeypatch.setattr(collect, "fetch_item_data", lambda item: (_ for _ in ()).throw(RuntimeError("refused")))
-    record = collect.investigate(ITEM)
+    monkeypatch.setattr(collect, "fetch_item_data", lambda item, at: (_ for _ in ()).throw(RuntimeError("refused")))
+    record = collect.investigate(ITEM, NOW)
     assert record["outcome"] == "could not run" and "SSDF did not answer" in record["reason"]
 
 
@@ -255,7 +255,7 @@ def test_main_investigates_every_queued_item_and_one_failure_does_not_stop_the_r
     monkeypatch.setattr(collect.agent, "preflight_offered_tools", lambda *args: sorted(BRIDGE))
     outcomes = iter([RuntimeError("hermes run did not start"), {"id": "2-new-high-alert", "outcome": "investigated"}])
 
-    def fake(item):
+    def fake(item, at):
         outcome = next(outcomes)
         if isinstance(outcome, Exception):
             raise outcome
@@ -328,7 +328,64 @@ def test_benign_is_never_called_safe_and_unsupported_and_failures_are_flagged():
 
 def test_report_defangs_model_text_and_caps_evidence():
     nasty = "@everyone [x](http://e.example) `ls` **bold**"
-    verdict, _ = grading.parse_verdict(verdict_block(summary=nasty, next_step=nasty, evidence=[{"tool": "t", "fact": nasty, "entities": ["@everyone"]}] * 12), ITEM["id"])
+    verdict, _ = grading.parse_verdict(verdict_block(summary=nasty, next_step=nasty, evidence=[{"tool": "recent_alerts", "fact": nasty, "entities": ["@everyone"]}] * 12), ITEM["id"])
     text = report.build_report(state([record(verdict=grading.verify(verdict, {"x"}), summary=nasty, facts={"signature": nasty})]), 1100.0)
     assert "@everyone" not in text and "](" not in text and "http://" not in text and "`" not in text and "**bold**" not in text
-    assert text.count("- [t]") == report.SHOWN
+    assert text.count("- [recent_alerts]") == report.SHOWN
+
+
+# --- window, identity fields, evidence tools ---------------------------------------------------------------
+
+def test_the_fetch_uses_the_absolute_window_socbot_looked_at_not_now():
+    seen = []
+
+    def call(tool, arguments):
+        seen.append(arguments["since"])
+        return {"rows": []}
+
+    collect.fetch_item_data(ITEM, NOW, call)
+    collect.fetch_item_data({"kind": "deny-spike", "facts": {}}, NOW, call)
+    assert set(seen) == {"2027-01-14T08:00:00Z"} and len(seen) == len(collect.ALERT_PROVIDERS) + len(collect.DENY_ACTIONS)  # NOW - 24 h
+    assert collect.fetch_item_data({"kind": "firewall-quiet", "facts": {"firewall": "x"}}, NOW, lambda tool, arguments: {"firewalls": []}) == (set(), 0)
+
+
+def test_only_identity_fields_count_as_seen():
+    row = {"signature": wrapped("bad-sig"), "observer": "fw1", "source_ip": "192.0.2.1", "severity": "high", "flag": True, "count": 2, "action": "deny"}
+    values = grading.identity_values(row)
+    assert values == {"bad-sig", "fw1", "192.0.2.1"}
+    for cited in ("high", "true", "2", "deny"):
+        verdict, _ = grading.parse_verdict(verdict_block(evidence=[{"tool": "recent_alerts", "fact": "f", "entities": [cited]}]), ITEM["id"])
+        assert grading.verify(verdict, values)["status"] == "unsupported", cited
+    assert grading.identity_values("not a row") == set() and grading.identity_values({"rule_name": wrapped("Block"), "name": "fw-a"}) == {"block", "fw-a"}
+
+
+def test_evidence_from_a_tool_not_allowed_or_not_called_supports_nothing():
+    values = {"192.0.2.1", "bad-sig"}
+    for tool in ("run_sql", "reidentify", "made-up", ""):
+        verdict, _ = grading.parse_verdict(verdict_block(evidence=[{"tool": tool, "fact": "f", "entities": ["192.0.2.1"]}]), ITEM["id"])
+        checked = grading.verify(verdict, values, {"recent_alerts"})
+        assert checked["status"] == "unsupported" and checked["evidence"][0]["tool_ok"] is False and checked["evidence"][0]["entities"][0]["seen"] is False, tool
+    verdict, _ = grading.parse_verdict(verdict_block(evidence=[{"tool": "neighbors", "fact": "f", "entities": ["192.0.2.1"]}]), ITEM["id"])
+    assert grading.verify(verdict, values, {"recent_alerts"})["status"] == "unsupported"  # allowed, but never called
+    assert grading.verify(verdict, values, {"neighbors"})["status"] == "supported"
+    prefixed, _ = grading.parse_verdict(verdict_block(evidence=[{"tool": "mcp__ssdf__Recent_Alerts", "fact": "f", "entities": ["192.0.2.1"]}]), ITEM["id"])
+    assert grading.verify(prefixed, values, grading.called_tools(GOOD_CALLS))["status"] == "supported"
+    text = report.build_report(state([record(verdict=grading.verify(verdict, values, {"recent_alerts"}))]), 1100.0)
+    assert "tool not on the allow-list or never called" in text
+
+
+def test_investigate_checks_evidence_tools_against_the_recorded_calls(monkeypatch):
+    stub_investigate(monkeypatch, verdict_block(evidence=[{"tool": "neighbors", "fact": "f", "entities": ["bad-sig"]}]))
+    record_ = collect.investigate(ITEM, NOW)
+    assert record_["verdict"]["status"] == "unsupported"  # GOOD_CALLS never called neighbors
+
+
+def test_main_passes_the_queues_timestamp_to_every_item(tmp_path, monkeypatch):
+    run = setup_main(monkeypatch, tmp_path, [ITEM])
+    monkeypatch.setattr(collect, "QUEUE", queue_file(tmp_path, [ITEM], at=NOW + 5))
+    monkeypatch.setattr(collect.time, "time", lambda: NOW + 6)
+    monkeypatch.setattr(collect.agent, "preflight_offered_tools", lambda *args: sorted(BRIDGE))
+    got = []
+    monkeypatch.setattr(collect, "investigate", lambda item, at: got.append(at) or {"id": item["id"], "outcome": "investigated"})
+    collect.main()
+    assert got == [NOW + 5] and run()["outcome"] == "investigated"

@@ -1,4 +1,4 @@
-"""socagent collect (daily 07:40, after socbot's 07:30): investigates what socbot escalated. Reads socbot's queue
+"""socagent collect (daily, 10 minutes after socbot): investigates what socbot escalated. Reads socbot's queue
 (~/.local/state/labbots/socbot-escalations.json, override SOCAGENT_QUEUE); an empty or stale (>20 h) queue is recorded as
 "nothing escalated" and NO model runs. For each item (at most 3) code first fetches the item's own SSDF data with the
 agent's read-only token (this also proves the server answers), then ONE Hermes one-shot (a local model, only the tool
@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
@@ -57,15 +58,17 @@ def read_queue(path: Path, now: float):
     return items, ""
 
 
-def fetch_item_data(item: dict, call=None) -> tuple[set, int]:
-    """(values, rows): the lowercased values of the SSDF rows that concern the item, fetched with the agent's own token
-    for the same 24 h window; `rows` counts the matching rows. `call(tool, arguments)` returns one raw reply."""
+def fetch_item_data(item: dict, at: float, call=None) -> tuple[set, int]:
+    """(values, rows): the lowercased identity values of the SSDF rows that concern the item, fetched with the agent's own
+    token for the 24 h window socbot looked at (the 24 h ending at the queue's `at`, as an absolute time, not "now");
+    `rows` counts the matching rows. `call(tool, arguments)` returns one raw reply."""
+    since = datetime.fromtimestamp(at - 24 * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     call = call or (lambda tool, arguments: mcp_call_tools(SSDF_MCP, [(tool, arguments)])[0])
     kind, facts = item["kind"], item["facts"]
     if kind == "new-high-alert":
-        replies = [call("recent_alerts", {"since": "now-24h", "min_severity": "medium", "providers": provider, "limit": 500}) for provider in ALERT_PROVIDERS]
+        replies = [call("recent_alerts", {"since": since, "min_severity": "medium", "providers": provider, "limit": 500}) for provider in ALERT_PROVIDERS]
     elif kind == "deny-spike":
-        replies = [call("query_flows", {"action": action, "since": "now-24h", "limit": 1000}) for action in DENY_ACTIONS]
+        replies = [call("query_flows", {"action": action, "since": since, "limit": 1000}) for action in DENY_ACTIONS]
     else:
         replies = [call("ingest_status", {})]
     for reply in replies:
@@ -74,7 +77,7 @@ def fetch_item_data(item: dict, call=None) -> tuple[set, int]:
     rows = grading.relevant_rows(kind, facts, replies)
     values: set = set()
     for row in rows:
-        grading.flatten(row, values)
+        values |= grading.identity_values(row)
     return values, len(rows)
 
 
@@ -84,12 +87,12 @@ def build_prompt(item: dict) -> str:
     return (HERE / "prompt.md").read_text().strip().replace("<<ITEM>>", data)
 
 
-def investigate(item: dict) -> dict:
-    """One item end to end: fetch its data, run the model, parse and verify its verdict, grade the run. Returns the
+def investigate(item: dict, at: float) -> dict:
+    """One item end to end (`at` is the queue's timestamp): fetch its data, run the model, parse and verify its verdict, grade the run. Returns the
     item's record. An unreachable SSDF server is "could not run" (no model run); an aborted Hermes run is graded as a failure."""
     record = {**item, "outcome": "running"}
     try:
-        values, rows = fetch_item_data(item)
+        values, rows = fetch_item_data(item, at)
     except Exception as exc:
         return {**record, "outcome": "could not run", "reason": f"SSDF did not answer ({type(exc).__name__}: {str(exc)[:200]})"}
     record["evidence_rows"] = rows
@@ -101,7 +104,7 @@ def investigate(item: dict) -> dict:
     facts = agent.session_facts(PROFILE, result["session_id"])
     verdict, note = grading.parse_verdict(result["output"], item["id"])
     if verdict is not None:
-        verdict = grading.verify(verdict, values)
+        verdict = grading.verify(verdict, values, grading.called_tools(facts["calls"]))
     record.update(tools_offered=facts["tools_offered"], calls=facts["calls"], verdict=verdict, verdict_note=note)
     record["grade"] = grading.grade(facts["calls"], facts["tools_offered"], agent.BRIDGE_TOOLS, verdict, note, result["status"])
     record["passed"] = all(ok for _, ok, _ in record["grade"])
@@ -117,11 +120,12 @@ def main() -> int:
             if not items:
                 run.update(outcome="nothing escalated", reason=reason)
                 return finish()
+            queued_at = json.loads(QUEUE.read_text())["at"]  # the window socbot looked at ends here
             run["tools_offered_preflight"] = agent.preflight_offered_tools(PROFILE, MODEL, SKILLS)
             save()
             for item in items:
                 try:
-                    run["items"].append(investigate(item))
+                    run["items"].append(investigate(item, queued_at))
                 except Exception as exc:  # one item failing says nothing about the others
                     run["items"].append({**item, "outcome": "could not run", "reason": f"{type(exc).__name__}: {str(exc)[:300]}"})
                 save()

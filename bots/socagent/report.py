@@ -1,4 +1,4 @@
-"""socagent report (daily 08:20): one block per item socbot escalated and the agent investigated. Posts nothing (an empty
+"""socagent report (daily, 50 minutes after the collect): one block per item socbot escalated and the agent investigated. Posts nothing (an empty
 report) when nothing was escalated; otherwise socbot's own facts come first because they are certain, then the agent's
 verdict labelled as a local model's reading, its evidence with each cited entity marked seen or not seen in SSDF data
 code fetched independently, the next step, and the criteria that failed. There is no answer key, so correctness is
@@ -46,6 +46,7 @@ def item_block(item: dict) -> list[str]:
     lines.append(f"Evidence: {verdict['seen']} entities seen, {verdict['not_seen']} not seen (seen = found in data code fetched itself: {item.get('evidence_rows', 0)} matching rows)")
     for entry in verdict["evidence"][:SHOWN]:
         marks = ", ".join(f"{defang(entity['entity'], 80)} {'seen' if entity['seen'] else 'not seen'}" for entity in entry["entities"]) or "no entities cited"
+        marks += "" if entry.get("tool_ok", True) else " (tool not on the allow-list or never called: nothing counted)"
         lines.append(f"- [{defang(entry['tool'], 40)}] {defang(entry['fact'], 250)} · {marks}")
     lines.append(f"Next step (the model's suggestion): {defang(verdict['next_step'], 200)}")
     return lines + ["No answer key: correctness of the reading is not graded."]

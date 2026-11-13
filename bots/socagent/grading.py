@@ -3,8 +3,10 @@ against SSDF data that code fetched itself, and the run criteria. All functions 
 is code's own work and certain; the verdict is a model's reading. There is NO answer key: whether the reading is
 right is not graded, only that the run was safe and the verdict is anchored in data code could see.
 
-Shortcut: "seen" is an exact, case-insensitive match against the values of the fetched rows, so an entity the model
-reached through a tool code did not re-run (a neighbour, an enforcement point) reads "not seen" though it may be true."""
+Shortcut: "seen" is an exact, case-insensitive match against the IDENTITY fields of the fetched rows (addresses,
+firewall/observer names, signature and rule names; never severity, flags or counts), so an entity the model reached through
+a tool code did not re-run (a neighbour, an enforcement point) reads "not seen" though it may be true. Evidence whose tool
+is not on the token's allow-list, or that the recorded session never called, supports nothing."""
 
 import json
 import sys
@@ -22,6 +24,9 @@ CONFIDENCES = {"low", "medium", "high"}
 VERDICT_KEYS = ("item", "verdict", "confidence", "summary", "evidence", "next_step")
 EVIDENCE_KEYS = ("tool", "fact", "entities")
 MAX_EVIDENCE, MAX_ENTITIES = 8, 6
+# the row fields that name an entity; everything else in a row (severity, action, counts, flags) is not something to cite
+IDENTITY_FIELDS = ("source_ip", "destination_ip", "source_address", "destination_address", "observer", "observer_hostname", "firewall",
+                   "name", "signature", "rule_name")
 CAPS = {"summary": 400, "next_step": 200, "tool": 40, "fact": 250, "entity": 80}
 
 
@@ -78,6 +83,19 @@ def flatten(value, found: set) -> set:
     return found
 
 
+def identity_values(row) -> set:
+    """The lowercased values of one row's IDENTITY_FIELDS (a row that is not an object has none)."""
+    found: set = set()
+    for field in IDENTITY_FIELDS if isinstance(row, dict) else ():
+        flatten(row.get(field), found)
+    return found
+
+
+def called_tools(calls: list[dict]) -> set[str]:
+    """The lowercased MCP tool names the recorded session actually called (server prefix dropped)."""
+    return {name.lower() for call in calls for name, _ in underlying_calls(call, set())}
+
+
 def relevant_rows(kind: str, facts: dict, replies: list[dict]) -> list:
     """The part of the independently fetched replies that concerns the escalated item: for an alert the rows of that
     signature on that observer, for denies every denied flow row, for a quiet firewall its ingest_status entry."""
@@ -89,10 +107,17 @@ def relevant_rows(kind: str, facts: dict, replies: list[dict]) -> list:
     return rows
 
 
-def verify(verdict: dict, values: set) -> dict:
+def verify(verdict: dict, values: set, called: set | None = None) -> dict:
     """A copy of the verdict with each cited entity marked: evidence[i]["entities"] becomes [{entity, seen}], and the verdict gets
-    status `supported` (some entity was seen in `values`, the lowercased values of the fetched data) or `unsupported`."""
-    evidence = [{**entry, "entities": [{"entity": entity, "seen": entity.lower() in values} for entity in entry["entities"]]} for entry in verdict["evidence"]]
+    status `supported` (some entity was seen in `values`, the identity values of the fetched data) or `unsupported`.
+    An entry whose tool is not in ALLOWED_TOOLS, or (when `called` is given) not in `called`, gets tool_ok False and
+    none of its entities counts as seen."""
+    def entry_tool_ok(entry: dict) -> bool:
+        name = entry["tool"].strip().split("__")[-1].lower()
+        return name in ALLOWED_TOOLS and (called is None or name in called)
+
+    evidence = [{**entry, "tool_ok": entry_tool_ok(entry), "entities": [{"entity": entity, "seen": entry_tool_ok(entry) and entity.lower() in values} for entity in entry["entities"]]}
+                for entry in verdict["evidence"]]
     seen = sum(1 for entry in evidence for entity in entry["entities"] if entity["seen"])
     total = sum(len(entry["entities"]) for entry in evidence)
     return {**verdict, "evidence": evidence, "seen": seen, "not_seen": total - seen, "status": "supported" if seen else "unsupported"}
