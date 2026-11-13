@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.0.3
 
-- socagent's evidence-window gap is fixed on the mecbots side (socbot stamps its queue after its queries); needs the next mecbots release.
+Still alpha quality. Needs mecbots 0.0.2 or later.
+
+- socagent's evidence window now covers everything socbot queried: socbot (mecbots 0.0.2) stamps its queue after its queries, and socagent starts its window 10 minutes earlier to cover the time those queries took.
 - bpcheckagent: a deactivated sub-statement of `then permit` no longer drops the permit from the derived key, and one deactivated member of a bracketed `match` list is honoured.
 - driftagent: SSH algorithm-name settings (`hostkey-algorithm`, `key-exchange`, `ciphers`, `macs`) are no longer dropped as key material, so a change to them is reported as drift.
 
