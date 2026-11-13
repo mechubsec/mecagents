@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.1
+
+Still alpha quality.
+
+- pcicomplyagent: the commit notice names the committer (in 0.0.1-alpha it was always `?`).
+- README: Discord is not sovereign; a self-hosted ntfy option is planned.
+
 ## 0.0.1-alpha
 
 First public release, alpha: `pcicomplyagent`, `bpcheckagent`, `driftagent`, `socagent`, and the shared `lib/agent.py`
