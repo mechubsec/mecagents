@@ -147,9 +147,9 @@ def wrapped(value):
     return {"value": value, "truncated": False, "untrusted": True}
 
 
-ALERT_ROWS = {"rows": [{"signature": wrapped("bad-sig"), "observer": "fw1", "source_ip": "192.0.2.1", "destination_ip": "198.51.100.5", "severity": "high"},
-                       {"signature": wrapped("other"), "observer": "fw1", "source_ip": "203.0.113.9"},
-                       {"signature": wrapped("bad-sig"), "observer": "fw2", "source_ip": "203.0.113.8"}]}
+ALERT_ROWS = {"rows": [{"timestamp": "2027-01-15 07:00:00.000", "signature": wrapped("bad-sig"), "observer": "fw1", "source_ip": "192.0.2.1", "destination_ip": "198.51.100.5", "severity": "high"},
+                       {"timestamp": "2027-01-15 07:00:00.000", "signature": wrapped("other"), "observer": "fw1", "source_ip": "203.0.113.9"},
+                       {"timestamp": "2027-01-15 07:00:00.000", "signature": wrapped("bad-sig"), "observer": "fw2", "source_ip": "203.0.113.8"}]}
 
 
 def test_entities_are_marked_seen_or_not_seen_case_insensitively():
@@ -182,7 +182,7 @@ def test_fetch_item_data_asks_the_right_tools_and_an_error_reply_raises():
 
     def call(tool, arguments):
         calls.append((tool, arguments.get("providers") or arguments.get("action")))
-        return ALERT_ROWS if tool == "recent_alerts" else {"rows": [{"source_ip": "192.0.2.11", "rule_name": wrapped("Block")}]}
+        return ALERT_ROWS if tool == "recent_alerts" else {"rows": [{"timestamp": "2027-01-15T07:30:00", "source_ip": "192.0.2.11", "rule_name": wrapped("Block")}]}
 
     values, rows = collect.fetch_item_data(ITEM, NOW, call)
     assert calls == [("recent_alerts", provider) for provider in collect.ALERT_PROVIDERS] and rows == 3 and "192.0.2.1" in values
@@ -389,3 +389,37 @@ def test_main_passes_the_queues_timestamp_to_every_item(tmp_path, monkeypatch):
     monkeypatch.setattr(collect, "investigate", lambda item, at: got.append(at) or {"id": item["id"], "outcome": "investigated"})
     collect.main()
     assert got == [NOW + 5] and run()["outcome"] == "investigated"
+
+
+# --- second review round ---------------------------------------------------------------------------------
+
+def test_evidence_stamped_after_the_queue_was_written_is_not_support_and_flows_end_at_it():
+    good = ALERT_ROWS["rows"][0]
+    late = {**good, "source_ip": "late-host", "timestamp": "2027-01-15 08:00:01.000"}
+    untimed = {key: value for key, value in good.items() if key != "timestamp"} | {"source_ip": "untimed-host"}
+    flow_calls = []
+
+    def call(tool, arguments):
+        if tool == "query_flows":
+            flow_calls.append(arguments)
+        return {"rows": [good, late, untimed]}
+
+    values, rows = collect.fetch_item_data(ITEM, NOW, call)
+    assert rows == len(collect.ALERT_PROVIDERS) and good["source_ip"] in values and not {"late-host", "untimed-host"} & values
+    values, rows = collect.fetch_item_data({"kind": "deny-spike", "facts": {}}, NOW, call)
+    assert rows == len(collect.DENY_ACTIONS) and "late-host" not in values
+    assert {arguments["until"] for arguments in flow_calls} == {"2027-01-15T08:00:00Z"} and {arguments["since"] for arguments in flow_calls} == {"2027-01-14T08:00:00Z"}
+    assert grading.row_time({"timestamp": "2027-01-15T08:00:00Z"}) == NOW and grading.row_time({"timestamp": "2027-01-15 08:00:00.000"}) == NOW
+    assert grading.row_time({"timestamp": "yesterday"}) is None and grading.row_time({}) is None and grading.row_time("x") is None
+    quiet = {"firewalls": [{"name": "fw-a"}]}  # an ingest_status snapshot has no stamp and is never filtered
+    assert grading.relevant_rows("firewall-quiet", {"firewall": "fw-a"}, [quiet], until=NOW) == quiet["firewalls"]
+
+
+def test_the_stored_packet_verdict_and_calls_are_scrubbed_but_graded_raw(monkeypatch):
+    secret = 'pre-shared-key ascii-text "hunter2"'
+    packet = verdict_block(summary='Secret "hunter2" configured') + f"\nthe row had {secret}\n"
+    stub_investigate(monkeypatch, packet)
+    monkeypatch.setattr(collect.agent, "session_facts", lambda *a: {"tools_offered": sorted(BRIDGE), "calls": GOOD_CALLS + [{"tool": "tool_call", "arguments": {"name": "recent_alerts", "arguments": {"q": secret}}}]})
+    record = collect.investigate(ITEM, NOW)
+    assert "hunter2" not in json.dumps(record) and agent.WITHHELD in record["packet"] and record["verdict"]["summary"] == agent.WITHHELD
+    assert record["passed"] is True and record["verdict"]["seen"] == 2  # verified against the real entities before scrubbing

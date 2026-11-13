@@ -24,10 +24,15 @@ this queue; see [VERSIONING](../VERSIONING.md).
 For each item code first fetches the item's own SSDF rows with its own token. Every entity the verdict cites is
 marked **seen** or **not seen** against the *identity* fields of those rows only (addresses, firewall or observer
 names, signature and rule names; exact, case-insensitive), so citing `high` or `true` supports nothing. The fetch uses
-the 24 h window that ended at the queue's `at` timestamp (absolute), the window `socbot` looked at, not "the last 24 h".
+the 24 h window that ended at the queue's `at` timestamp (absolute), the window `socbot` looked at, not "the last 24 h": flows are
+asked for with `since` and `until`; `recent_alerts` takes no `until`, so alert rows stamped after `at` (or with no readable stamp)
+are dropped, and cannot support an entity socbot never saw.
 Evidence whose `tool` is not on the allow-list, or that the recorded session never called, counts for nothing. A verdict
 where nothing is seen is **unsupported**. An entity the model reached through a tool code did not re-run reads "not seen"
 even if true.
+
+Nothing credential-looking from the model (its output, its tool-call arguments) is written to the state file: those lines are replaced by a placeholder before the first save, while grading reads the original. State files and their lock are mode 600.
+The stored verdict is scrubbed after it is checked.
 
 ## How it is graded
 

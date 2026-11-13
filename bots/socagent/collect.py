@@ -60,21 +60,22 @@ def read_queue(path: Path, now: float):
 
 def fetch_item_data(item: dict, at: float, call=None) -> tuple[set, int]:
     """(values, rows): the lowercased identity values of the SSDF rows that concern the item, fetched with the agent's own
-    token for the 24 h window socbot looked at (the 24 h ending at the queue's `at`, as an absolute time, not "now");
+    token for the 24 h window socbot looked at (the 24 h ending at the queue's `at`, as absolute times, not "now": `until` where the
+    tool takes it, else rows stamped after `at` are dropped);
     `rows` counts the matching rows. `call(tool, arguments)` returns one raw reply."""
-    since = datetime.fromtimestamp(at - 24 * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since, until = (datetime.fromtimestamp(moment, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") for moment in (at - 24 * 3600, at))
     call = call or (lambda tool, arguments: mcp_call_tools(SSDF_MCP, [(tool, arguments)])[0])
     kind, facts = item["kind"], item["facts"]
     if kind == "new-high-alert":
         replies = [call("recent_alerts", {"since": since, "min_severity": "medium", "providers": provider, "limit": 500}) for provider in ALERT_PROVIDERS]
     elif kind == "deny-spike":
-        replies = [call("query_flows", {"action": action, "since": since, "limit": 1000}) for action in DENY_ACTIONS]
+        replies = [call("query_flows", {"action": action, "since": since, "until": until, "limit": 1000}) for action in DENY_ACTIONS]
     else:
         replies = [call("ingest_status", {})]
     for reply in replies:
         if "error" in reply:
             raise RuntimeError(f"{reply['error']}: {str(reply.get('detail', ''))[:150]}")
-    rows = grading.relevant_rows(kind, facts, replies)
+    rows = grading.relevant_rows(kind, facts, replies, until=at)  # recent_alerts takes no `until`: rows after the queue was written are dropped by timestamp
     values: set = set()
     for row in rows:
         values |= grading.identity_values(row)
@@ -98,15 +99,16 @@ def investigate(item: dict, at: float) -> dict:
     record["evidence_rows"] = rows
     started = time.time()
     result = agent.run_hermes(PROFILE, MODEL, SKILLS, build_prompt(item), AGENT_TIMEOUT)
-    record.update(agent_status=result["status"], packet=result["output"][:30000], session_id=result["session_id"], seconds=round(time.time() - started))
+    # nothing credential-looking reaches the state file: the stored copies are scrubbed, verifying and grading read the raw ones
+    record.update(agent_status=result["status"], packet=agent.scrub_text(result["output"][:30000]), session_id=result["session_id"], seconds=round(time.time() - started))
     if not result["session_id"]:  # Hermes never started a session: nothing to grade
         raise RuntimeError(f"hermes run did not start: {result['status']}")
     facts = agent.session_facts(PROFILE, result["session_id"])
     verdict, note = grading.parse_verdict(result["output"], item["id"])
     if verdict is not None:
         verdict = grading.verify(verdict, values, grading.called_tools(facts["calls"]))
-    record.update(tools_offered=facts["tools_offered"], calls=facts["calls"], verdict=verdict, verdict_note=note)
     record["grade"] = grading.grade(facts["calls"], facts["tools_offered"], agent.BRIDGE_TOOLS, verdict, note, result["status"])
+    record.update(tools_offered=facts["tools_offered"], calls=agent.scrub_json(facts["calls"]), verdict=agent.scrub_json(verdict), verdict_note=note)
     record["passed"] = all(ok for _, ok, _ in record["grade"])
     record["outcome"] = "investigated"
     return record

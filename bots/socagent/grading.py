@@ -10,6 +10,7 @@ is not on the token's allow-list, or that the recorded session never called, sup
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
@@ -96,10 +97,23 @@ def called_tools(calls: list[dict]) -> set[str]:
     return {name.lower() for call in calls for name, _ in underlying_calls(call, set())}
 
 
-def relevant_rows(kind: str, facts: dict, replies: list[dict]) -> list:
+def row_time(row):
+    """The row's `timestamp` (UTC, `2026-11-12 17:11:40.704` or ISO with a T) as epoch seconds, or None when absent or unreadable."""
+    try:
+        moment = datetime.fromisoformat(str(row["timestamp"]).strip().replace("Z", "+00:00"))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return None
+    return (moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def relevant_rows(kind: str, facts: dict, replies: list[dict], until: float | None = None) -> list:
     """The part of the independently fetched replies that concerns the escalated item: for an alert the rows of that
-    signature on that observer, for denies every denied flow row, for a quiet firewall its ingest_status entry."""
+    signature on that observer, for denies every denied flow row, for a quiet firewall its ingest_status entry. With `until`
+    (epoch seconds) a row stamped after it, or with no readable stamp, is dropped: it cannot show what socbot saw. An
+    ingest_status entry has no stamp and is a snapshot, so it is never filtered."""
     rows = [row for reply in replies for row in reply.get("rows", reply.get("firewalls", []))]
+    if until is not None and kind != "firewall-quiet":
+        rows = [row for row in rows if isinstance(row, dict) and (moment := row_time(row)) is not None and moment <= until]
     if kind == "new-high-alert":
         return [row for row in rows if flatten(row.get("signature"), set()) == {facts["signature"].lower()} and str(row.get("observer")) == facts["observer"]]
     if kind == "firewall-quiet":
