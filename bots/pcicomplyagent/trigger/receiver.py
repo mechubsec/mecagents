@@ -1,7 +1,9 @@
 """Commit-notification receiver: a commit on the target device starts a pcicomplyagent run.
 
 POST /commit from ALLOWED_SOURCE with the shared secret header starts
-pcicomplyagent-triggered.service (debounced). The body is never acted on: it is only
+pcicomplyagent-triggered.service (debounced). While the scheduled weekly collect is running the start is deferred: the
+notice is answered 202, kept (the latest one), and the triggered unit starts once the scheduled collect has finished,
+so the two never queue on the state lock. The body is never acted on: it is only
 logged, and (device, user) are kept, length-capped and defanged, as a small note file the run
 may show as "committed by ..." (untrusted: the device's own words).
 """
@@ -11,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -21,11 +24,14 @@ ALLOWED_SOURCE = os.environ.get("TRIGGER_ALLOWED_SOURCE", "192.0.2.20")
 SECRET_FILE = Path(os.environ.get("TRIGGER_SECRET_FILE", Path.home() / ".config/labbots/pcicomplyagent-trigger.secret"))
 NOTE_FILE = Path(os.environ.get("TRIGGER_NOTE_FILE", Path.home() / ".local/state/labbots/pcicomplyagent-trigger.json"))
 UNIT = "pcicomplyagent-triggered.service"
+SCHEDULED_UNIT = "labbot@pcicomplyagent.collect.service"  # the weekly collect
+POLL_SECONDS = 15
 HEADER = "X-Trigger-Secret"
 MAX_BODY = 512
 DEBOUNCE_SECONDS = 60
 
 _last_start = 0.0
+_deferred: dict | None = None  # the note of a commit notice waiting for the scheduled collect to finish
 
 
 def source_ok(client_ip: str, allowed: str = ALLOWED_SOURCE) -> bool:
@@ -70,19 +76,54 @@ def write_note(note: dict, path: Path = NOTE_FILE) -> None:
     os.replace(temp, path)
 
 
-def should_start(now: float, last_start: float, running: bool, debounce: int = DEBOUNCE_SECONDS) -> str:
-    """'start', 'running' or 'debounced'."""
+def should_start(now: float, last_start: float, running: bool, debounce: int = DEBOUNCE_SECONDS, scheduled: bool = False) -> str:
+    """'running' (the triggered unit is active), 'deferred' (the scheduled collect is running), 'debounced' or 'start'."""
     if running:
         return "running"
+    if scheduled:
+        return "deferred"
     if now - last_start < debounce:
         return "debounced"
     return "start"
 
 
-def unit_running() -> bool:
-    """Whether the triggered unit is active or starting."""
-    state = subprocess.run(["systemctl", "--user", "is-active", UNIT], capture_output=True, text=True).stdout.strip()
+def unit_active(unit: str) -> bool:
+    """Whether the user unit is active or starting."""
+    state = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True).stdout.strip()
     return state in ("active", "activating")
+
+
+def start_run(note: dict) -> None:
+    """Leave the note (stamped now) for the run and start the triggered unit."""
+    global _last_start
+    _last_start = time.time()
+    try:
+        write_note({**note, "at": _last_start})
+    except OSError as exc:  # a missing note only costs the "by <user>" detail
+        log(f"could not write the note: {type(exc).__name__}")
+    subprocess.run(["systemctl", "--user", "start", "--no-block", UNIT])
+
+
+def wait_then_start() -> None:
+    """Wait for the scheduled collect to finish, then start the one deferred run (with the latest note). Whatever happens,
+    the deferral is cleared so a later notice can start a new waiter."""
+    global _deferred
+    try:
+        while unit_active(SCHEDULED_UNIT):
+            time.sleep(POLL_SECONDS)
+        log("scheduled collect finished: starting the deferred run")
+        start_run(_deferred)
+    finally:
+        _deferred = None
+
+
+def defer(note: dict) -> None:
+    """Keep the latest note; the first deferral starts the waiter, later ones only replace the note."""
+    global _deferred
+    first = _deferred is None
+    _deferred = note
+    if first:
+        threading.Thread(target=wait_then_start, daemon=True).start()
 
 
 def log(message: str) -> None:
@@ -102,8 +143,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self) -> None:
-        """Validate, debounce, start the run, answer 202."""
-        global _last_start
+        """Validate, debounce, start (or defer) the run, answer 202."""
         client = self.client_address[0]
         if self.path != "/commit":
             return self._reply(404)
@@ -116,15 +156,12 @@ class Handler(BaseHTTPRequestHandler):
         body = read_capped(self.rfile, self.headers.get("Content-Length"))
         if body is None:
             return self._reply(404)
-        verdict = should_start(time.time(), _last_start, unit_running())
+        verdict = should_start(time.time(), _last_start, unit_active(UNIT), scheduled=unit_active(SCHEDULED_UNIT))
         log(f"commit notice from {client}: {defang(body)!r} -> {verdict}")
         if verdict == "start":
-            _last_start = time.time()
-            try:
-                write_note(parse_note(body, _last_start))
-            except OSError as exc:  # a missing note only costs the "by <user>" detail
-                log(f"could not write the note: {type(exc).__name__}")
-            subprocess.run(["systemctl", "--user", "start", "--no-block", UNIT])
+            start_run(parse_note(body, time.time()))
+        elif verdict == "deferred":
+            defer(parse_note(body, time.time()))
         self._reply(202)
 
 

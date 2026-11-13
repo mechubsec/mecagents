@@ -22,9 +22,13 @@
   bpcheckagent's key is derived from the config by simple rules and covers only what those rules read.
 - **pcicomplyagent's key is derived from the config by simple rules** (any/any/any permits, untrusted into the
   cardholder zone with source any, a missing logged deny-all) and covers only what those rules read; the zone names are
-  assumptions you set.
+  assumptions you set. A logged deny-all counts only if it covers the zone pairs that involve a cardholder zone, and a name
+  shared by two policies is judged on all of them, because the agent's rule name has no scope.
 - **A dry run can write state.** `run_bot.py <agent>.collect --dry-run` runs the real collect: it calls the
   model and writes the state file (and, for driftagent, may record a golden). Only the post is skipped.
+- **State files hold no credential-looking model text, but the check is a heuristic.** Lines of model output, files and tool-call
+  arguments that match a credential field, key material or a long blob are replaced before saving; a plain-text secret in
+  prose can pass. State files are mode 600.
 - **Never run an agent with a write-capable token.** The token's scope is the real barrier; the prompt's
   "read only" is not.
 - **Discord is a cloud service.** Reports name devices and rules. The mecbots runner (0.2.0 or later, which

@@ -24,7 +24,7 @@ UNTRUST_ZONES = tuple(os.environ.get("PCICOMPLYAGENT_UNTRUST_ZONES", "untrust").
 CDE_ZONES = tuple(os.environ.get("PCICOMPLYAGENT_CDE_ZONES", "CDE").split(","))
 CONTROL_NUMBER = re.compile(r"^\d{1,2}(\.\d{1,2}){0,3}$")  # a PCI DSS requirement number: 1, 1.3, 1.3.2, 10.2.1.1
 MAX_NAMES = 30
-SEVERITY = re.compile(r"\b(critical|high|medium|low)\b", re.I)
+SEVERITY = re.compile(r"(?<!non-)\b(critical|high|medium|low)\b", re.I)  # "non-critical" is not a rating
 # a PCI DSS requirement number like 1.3.1; not part of an IP address or a version ("v4.0.1", "4.0.1")
 CONTROL = re.compile(r"(?<![\w./])(\d{1,2}\.\d{1,2}(?:\.\d{1,2})?)(?![\w/]|\.\d)")
 LIST_ITEM = re.compile(r"(?:[-*\u2022]|\d+[.)])\s")
@@ -173,17 +173,35 @@ def policy_problems(facts: dict) -> list[str]:
 
 
 def narrow_logged_described(policies: dict) -> list[str]:
-    """Names of active permit policies that are narrow (no `any` in source, destination or application, all given),
-    described and logged: the agent must not rate these medium or higher. Sorted."""
+    """Names the agent must not rate medium or higher: every active instance of the name, in any zone pair or global, is a
+    permit that is narrow (no `any` in source, destination or application, all given), described and logged. A name
+    shared with a wider policy elsewhere is left out (the agent's rule name carries no scope). Sorted."""
     def narrow(facts: dict) -> bool:
         return all(facts[field] and "any" not in facts[field] for field in ("source", "destination", "application"))
-    return sorted({name for (_, name), facts in policies.items()
-                   if facts["active"] and facts["permit"] and facts["log"] and facts["described"] and narrow(facts)})
+    instances: dict[str, list[dict]] = {}
+    for (_, name), facts in policies.items():
+        if facts["active"]:
+            instances.setdefault(name, []).append(facts)
+    return sorted(name for name, group in instances.items()
+                  if all(facts["permit"] and facts["log"] and facts["described"] and narrow(facts) for facts in group))
+
+
+def covers(deny: dict, from_zone, to_zone) -> bool:
+    """True when the deny policy's zones include this pair; a policy with no zone given (or `any`) covers every zone,
+    and a zone of None (any zone) is covered only by such a policy."""
+    return all(not zones or "any" in zones or (zone is not None and zone in zones)
+               for zones, zone in ((deny["from_zones"], from_zone), (deny["to_zones"], to_zone)))
 
 
 def has_logged_deny_all(policies: dict) -> bool:
-    """True when an active deny policy matching any/any/any logs."""
-    return any(facts["active"] and facts["deny"] and facts["log"] and is_any_any_any(facts) for facts in policies.values())
+    """True when active deny any/any/any policies that log cover the zone pairs that involve a cardholder zone in the active
+    policies (a global deny-all with no zones covers all of them). With no such pair, only a deny-all that covers every
+    zone counts. A logged deny-all for an unrelated zone pair does not count."""
+    denies = [facts for facts in policies.values() if facts["active"] and facts["deny"] and facts["log"] and is_any_any_any(facts)]
+    pairs = {(from_zone, to_zone) for facts in policies.values() if facts["active"]
+             for from_zone in (facts["from_zones"] or {None}) for to_zone in (facts["to_zones"] or {None})
+             if from_zone in CDE_ZONES or to_zone in CDE_ZONES} or {(None, None)}
+    return all(any(covers(deny, *pair) for deny in denies) for pair in pairs)
 
 
 NO_DENY_PHRASES = ["default-deny", "default deny", "deny-all", "deny all", "explicit deny", "implicit deny"]

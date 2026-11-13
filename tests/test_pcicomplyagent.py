@@ -622,3 +622,75 @@ def test_triggered_report_leads_with_what_code_knows_and_always_posts():
     assert "⚡" not in report.build_report({"run": graded_run()}, now=1100.0)  # the weekly report is unchanged
     hostile = {**commit, "added": ["@everyone`x`"], "flags": {"@everyone`x`": ["no log"]}}
     assert "@everyone" not in report.build_report({"run": {**run, "commit": hostile}}, now=1100.0)
+
+
+# --- second review round ---------------------------------------------------------------------------------
+
+def zone_policy(name, source, destination, application, action="permit", zones=("CDE", "untrust"), log=None, description=None):
+    head = f"set security policies from-zone {zones[0]} to-zone {zones[1]} policy {name}" if zones else f"set security policies global policy {name}"
+    lines = [f"{head} match source-address {source}", f"{head} match destination-address {destination}", f"{head} match application {application}", f"{head} then {action}"]
+    return "\n".join(lines + ([f"{head} then log {log}"] if log else []) + ([f'{head} description "d"'] if description else []))
+
+
+def test_a_logged_deny_all_for_an_unrelated_zone_pair_is_not_a_default_deny():
+    permit = zone_policy("CDE-OUT", "H", "D", "junos-https", log="session-close", description=True)
+    unrelated = zone_policy("DENY-OTHER", "any", "any", "any", "deny", ("dmz", "guest"), log="session-init")
+    assert grading.derive_key(permit + "\n" + unrelated)["must_find_concepts"] == {grading.NO_DENY_CONCEPT: grading.NO_DENY_PHRASES}
+    global_deny = zone_policy("DENY-ALL", "any", "any", "any", "deny", None, log="session-init")
+    assert grading.derive_key(permit + "\n" + unrelated + "\n" + global_deny)["must_find_concepts"] == {}
+    outbound = zone_policy("DENY-CDE-OUT", "any", "any", "any", "deny", ("CDE", "untrust"), log="session-init")
+    inbound = zone_policy("CDE-IN", "H", "D", "junos-https", zones=("untrust", "CDE"), log="session-close", description=True)
+    one_way = permit + "\n" + inbound + "\n" + outbound
+    assert grading.NO_DENY_CONCEPT in grading.derive_key(one_way)["must_find_concepts"]  # untrust to CDE is not covered
+    both = one_way + "\n" + zone_policy("DENY-CDE-IN", "any", "any", "any", "deny", ("untrust", "CDE"), log="session-init")
+    assert grading.derive_key(both)["must_find_concepts"] == {}
+    unlogged = zone_policy("DENY-ALL", "any", "any", "any", "deny", None)
+    assert grading.NO_DENY_CONCEPT in grading.derive_key(permit + "\n" + unlogged)["must_find_concepts"]
+
+
+def test_the_same_policy_name_in_two_zone_pairs_is_never_both_must_find_and_must_not_flag():
+    narrow = zone_policy("DUP", "H", "D", "junos-https", zones=("CDE", "untrust"), log="session-close", description=True)
+    wide = zone_policy("DUP", "any", "any", "any", zones=("dmz", "untrust"))
+    key = grading.derive_key(narrow + "\n" + wide)
+    assert key["must_find"] == ["DUP"] and key["must_not_flag"] == []
+    assert grading.derive_key(narrow)["must_not_flag"] == ["DUP"]
+    other_pair = zone_policy("DUP", "H2", "D", "junos-https", zones=("dmz", "untrust"), log="session-close", description=True)
+    assert grading.derive_key(narrow + "\n" + other_pair)["must_not_flag"] == ["DUP"]
+    assert grading.derive_key(narrow + "\n" + zone_policy("DUP", "H2", "D", "junos-https", zones=("dmz", "untrust")))["must_not_flag"] == []  # not logged or described
+
+
+def test_non_critical_is_not_a_heuristic_critical_rating():
+    assert grading.extract_findings("- CDE-ANY-OUT is non-critical here", CONFIG) == []
+    assert grading.extract_findings("- CDE-ANY-OUT is critical here", CONFIG)[0]["severity"] == "critical"
+
+
+def run_collect_grade(monkeypatch, packet, files=None, calls=GOOD_CALLS):
+    """collect.run_agent_and_grade end to end with the model stubbed: (run, every saved copy of the state)."""
+    monkeypatch.setattr(collect.agent, "preflight_offered_tools", lambda *a: list(BRIDGE))
+    monkeypatch.setattr(collect.agent, "run_hermes", lambda *a: {"status": "ok", "output": packet, "files": files or {}, "session_id": "s1", "seconds": 1})
+    monkeypatch.setattr(collect.agent, "session_facts", lambda *a: {"tools_offered": list(BRIDGE), "calls": calls})
+    run, saved = {"phases": {}}, []
+    collect.run_agent_and_grade(run, lambda: saved.append(json.dumps(run)), CONFIG)
+    return run, saved
+
+
+def test_collect_grades_a_valid_block_from_its_findings_not_from_the_prose(monkeypatch):
+    packet = block(item(rule="REMOTE-ADMIN-SSH"))  # the prose around the block mentions `CDE-ANY-OUT`, the block does not
+    run, _ = run_collect_grade(monkeypatch, packet)
+    grade = {name: ok for name, ok, _ in run["grade"]}
+    assert run["findings_source"] == "structured" and run["grade_basis"] == "structured findings"
+    assert grade["finds REMOTE-ADMIN-SSH"] is True and grade["finds CDE-ANY-OUT"] is False and run["passed"] is False
+    no_block = "Findings: CDE-ANY-OUT, REMOTE-ADMIN-SSH and baseline-permit are open. No default deny."
+    run, _ = run_collect_grade(monkeypatch, no_block)  # no block: the text is what there is, and the report says so
+    assert run["findings_source"] == "heuristic" and run["grade_basis"] == "from text (no structured findings)"
+    assert {name: ok for name, ok, _ in run["grade"]}["finds CDE-ANY-OUT"] is True
+
+
+def test_nothing_credential_looking_is_saved_to_the_state_file(monkeypatch):
+    import agent
+    secret = 'set security ike policy P pre-shared-key ascii-text "hunter2"'
+    packet = block(item(summary='Secret "hunter2" configured', evidence=secret)) + f"\nthe config has {secret}\n"
+    calls = GOOD_CALLS + [{"tool": "tool_call", "arguments": {"name": "get_junos_config", "arguments": {"note": secret}}}]
+    run, saved = run_collect_grade(monkeypatch, packet, files={"notes.txt": secret}, calls=calls)
+    assert saved and not any("hunter2" in text for text in saved) and "hunter2" not in json.dumps(run)
+    assert agent.WITHHELD in run["packet"] and run["grade"]  # graded from the real text, stored scrubbed

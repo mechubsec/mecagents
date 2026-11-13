@@ -47,6 +47,9 @@ environment variables: `TRIGGER_BIND` (default `192.0.2.10`), `TRIGGER_PORT` (`8
 - **Body ignored**: capped at 512 bytes and never acted on. Only `device=` and `user=` are kept, each capped at 32
   printable characters, in a small note file the run may show as "by <user>". It is the device's own text: untrusted.
 - **Debounce**: a notice within 60 s of the last start, or while the unit runs, starts nothing (the reply is still 202).
+- **Deferral**: while the weekly collect (`labbot@pcicomplyagent.collect.service`) is running, the notice is kept (the latest one
+  wins) and the triggered unit starts when the weekly collect has finished: one run, however many notices. Without this the
+  triggered collect would queue on the state lock and might time out.
 
 Open the receiver's port in the host firewall for the device's address only, for example with `ufw`:
 `ufw allow from <device-address> to any port 8802 proto tcp`.
@@ -56,7 +59,10 @@ Open the receiver's port in the host firewall for the device's address only, for
 `pcicomplyagent-triggered.service` runs the collect, then the posting report, once. It sets
 `PCICOMPLYAGENT_TRIGGER=commit`. It is its own unit rather than `labbot@...` because the quiet-hours guard
 (`ExecCondition` in the `labbot@` template) must not apply: a commit is worth knowing about at any hour, and a
-triggered run always posts. Copy both units to `~/.config/systemd/user/`, run `systemctl --user daemon-reload`, and
+triggered run always posts. Its limits are the weekly collect's budget plus the report step: `TimeoutStartSec=3300` and
+`LABBOTS_TIMEOUT=2700`. Site settings (device, MCP server, zones, state path, provider, model, post target) go in
+`~/.config/labbots/pcicomplyagent.env`, an optional file that the unit reads, like the weekly instance does (see
+[SETUP](SETUP.md#6-configure-and-schedule)); without it the unit would run on the defaults. Copy both units to `~/.config/systemd/user/`, run `systemctl --user daemon-reload`, and
 `systemctl --user enable --now pcicomplyagent-trigger-receiver.service`. Do not enable the triggered unit; the receiver
 starts it.
 

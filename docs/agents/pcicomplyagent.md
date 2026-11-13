@@ -39,9 +39,12 @@ rule-level problems grades as clean, and a flawed one is graded on the flaws it 
   source, destination and application all `any` (zone pair or global), and every active permit from an untrusted zone
   into the cardholder zone with source `any`. Zone names are `UNTRUST_ZONES` (default `untrust`) and `CDE_ZONES`
   (default `CDE`), overridable with `PCICOMPLYAGENT_UNTRUST_ZONES` / `PCICOMPLYAGENT_CDE_ZONES` (comma separated).
-- **Must find, as a concept**: "no logged default deny", required only when no active deny-all policy logs.
-- **Must not flag** (medium or higher): active permits that are narrow (no `any` in source, destination or
-  application), described and logged.
+- **Must find, as a concept**: "no logged default deny", required unless an active deny-all policy that logs covers every zone pair
+  that involves a cardholder zone in the active policies (a global deny-all with no zone match covers them all). A logged deny-all for
+  an unrelated zone pair does not count.
+- **Must not flag** (medium or higher): names whose every active instance, in any zone pair or global, is a permit that is narrow
+  (no `any` in source, destination or application), described and logged. A name shared with a wider policy elsewhere is left out,
+  because the agent's rule name carries no scope.
 - **Must not assert**: phrases such as "is PCI compliant". Plus tool-use criteria: only the bridge offered, MCP calls
   made, no write tool (a direct top-level call to one counts too), only the target device, no attempt at a tool it was
   not offered.
@@ -51,8 +54,9 @@ rule-level problems grades as clean, and a flawed one is graded on the flaws it 
 
 When the packet has a valid findings block, the criteria are scored from the parsed findings, not from the text: a name
 in an inventory list or in "I did not find X" does not count. Without a valid block the text is scored instead,
-ignoring names and severities that are denied in the same clause, and the report labels the grade "from text (no
-structured findings)".
+ignoring names and severities that are denied in the same clause (`non-critical` is not a rating), and the report labels the grade
+"from text (no structured findings)"; with a block it says "graded structured findings". A name that only the prose around a valid
+block mentions does not satisfy a required finding.
 
 ### What the report says
 
@@ -75,7 +79,11 @@ The report then leads with the certain part, written by code: `⚡ commit on <de
 `🔴 this commit added <policy>: permit any/any/any, no log, no description` or `🟢 this commit added nothing code
 considers a PCI rule problem`. The agent's packet follows as usual, with one extra criterion: it must name every policy
 code flagged in the commit. A triggered run always posts. The weekly run is unchanged apart from the grading above.
-A triggered run replaces an earlier run of the same day in the state file.
+A triggered run replaces an earlier run of the same day in the state file. If a commit arrives while the weekly collect is
+running, the receiver answers 202, keeps the latest notice and starts the triggered unit once the weekly collect has finished (one
+run, however many notices), so the two never queue on the state lock.
+
+Nothing credential-looking from the model (its output, any files, its tool-call arguments) is written to the state file: those lines are replaced by a placeholder before the first save, while grading reads the original. State files and their lock are mode 600.
 
 The fetched config is held in memory only. The state file keeps the key, the findings and the commit analysis, not the
 config; a separate small file keeps the `set security policies` lines for the next run's fallback comparison.
@@ -94,7 +102,8 @@ config; a separate small file keeps the `set security policies` lines for the ne
 | `PCICOMPLYAGENT_STATE` | `~/.local/state/labbots/pcicomplyagent.json` |
 | `TRIGGER_NOTE_FILE` | `~/.local/state/labbots/pcicomplyagent-trigger.json` (the receiver's note) |
 
-Shared variables are in [SETUP](../SETUP.md).
+Put them in `~/.config/labbots/pcicomplyagent.env` (`KEY=value` lines, optional): the weekly collect, the report and the triggered unit
+all read it, so a site setting reaches every run. Shared variables are in [SETUP](../SETUP.md).
 
 ## Schedule
 

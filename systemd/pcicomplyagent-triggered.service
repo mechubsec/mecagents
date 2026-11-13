@@ -6,7 +6,12 @@ After=network-online.target
 [Service]
 Type=oneshot
 # own unit, not labbot@: the quiet-hours ExecCondition deliberately does not apply
-TimeoutStartSec=1800
+# 3300 = the weekly collect's 2700 s (preflight and cold load <=600 s, model run <=1800 s, evidence, grading) + 600 s for the
+# report step; LABBOTS_TIMEOUT is run_bot's cap for each step, as in the weekly collect's timeout drop-in
+TimeoutStartSec=3300
+Environment=LABBOTS_TIMEOUT=2700
+# the same optional site settings the weekly instance reads (device, MCP server, zones, state path, provider, model, post target)
+EnvironmentFile=-%h/.config/labbots/pcicomplyagent.env
 # hermes lives in ~/.local/bin, which a user unit's default PATH lacks
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
 # makes the collect ask the device what the commit changed, and the report lead with it

@@ -94,6 +94,10 @@ Environment=PCICOMPLYAGENT_DEVICE=my-firewall
 Environment=LABBOTS_HERMES_PROVIDER=my-ollama
 ```
 
+For pcicomplyagent, which also has a commit-triggered unit, put the same settings in one optional file instead,
+`~/.config/labbots/pcicomplyagent.env` (`KEY=value` lines, mode 600): the weekly collect, the report and the triggered unit all
+read it (`EnvironmentFile=-`, shipped in their drop-ins), so a setting reaches every run.
+
 Variables per agent are in `docs/agents/`. Shared: `LABBOTS_HERMES_PROVIDER` (default `local-ollama`),
 `LABBOTS_TIMEOUT` (set to 2700 by the shipped drop-ins; 4800 for socagent), `LABBOTS_TARGET`.
 
