@@ -407,7 +407,7 @@ def scrub_json(value):
 
 
 # a mapping key naming a credential field: the whole value under it is replaced, whatever it holds
-CREDENTIAL_KEY = re.compile(r"password|passwd|secret|pre-?shared-?key|authentication-?key|community|privacy-?key|private-?key|api-?key|token", re.I)
+CREDENTIAL_KEY = re.compile(r"password|passwd|secret|pre[-_ ]?shared[-_ ]?key|authentication[-_ ]?key|community|privacy[-_ ]?key|private[-_ ]?key|api[-_ ]?key|token", re.I)
 WITHHELD_VALUE = "[value withheld: credential field]"
 
 

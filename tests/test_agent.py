@@ -270,6 +270,18 @@ def test_the_state_file_never_holds_a_credential_from_any_derived_field(tmp_path
     assert json.loads(text)["run"]["calls"][0]["arguments"]["name"] == "ok"
 
 
+def test_snake_case_credential_keys_are_withheld_on_save(tmp_path):
+    secret = "hun" + "ter2"
+    state = tmp_path / "s.json"
+    with agent.recorded_run(state, model="m") as (run, save):
+        run["calls"] = [{"tool": "t", "arguments": {"api_key": secret, "private_key": secret, "pre_shared_key": secret,
+                                                    "authentication_key": secret, "privacy key": secret, "name": "ok"}}]
+        save()
+    text = state.read_text()
+    assert secret not in text
+    assert json.loads(text)["run"]["calls"][0]["arguments"]["name"] == "ok"
+
+
 def test_an_old_lock_with_a_loose_mode_is_tightened(tmp_path):
     (tmp_path / "s.lock").touch(mode=0o644)
     (tmp_path / "s.lock").chmod(0o644)
