@@ -35,7 +35,7 @@ OBJECT_PATTERNS = [  # (regex over the line after "set "/"deactivate ", kind; ev
     (re.compile(r"^security nat \S+ rule-set (\S+)(?: rule (\S+))?"), "other"),
 ]
 # an SSH algorithm-name setting (`hostkey-algorithm ssh-ed25519`): it only matches SECRET_LINE through the key-type name, and holds no key
-ALGORITHM_LINE = re.compile(r"^(?:set|deactivate) system services ssh (?:hostkey-algorithm|pubkey-algorithm|key-exchange|ciphers|macs)(?: (?:\[|\]|(?!\S*key)[\w@.+-]{1,48}))+$")
+ALGORITHM_LINE = re.compile(r"^(?:set|deactivate) system services ssh (?:hostkey-algorithm(?:-list)?|pubkey-algorithm|key-exchange|ciphers|macs)(?: (?:\[|\]|(?!\S*key)[\w@.+-]{1,48}))+$")
 ZONE_INTERFACE = re.compile(r"^security zones security-zone \S+ interfaces (\S+)")
 INTERFACE = re.compile(r"^interfaces (\S+)(?: unit (\d+))?")
 
