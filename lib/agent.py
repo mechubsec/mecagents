@@ -420,9 +420,15 @@ def scrub_record(value):
     if isinstance(value, (list, tuple)):
         return [scrub_record(item) for item in value]
     if isinstance(value, dict):
-        return {scrub_text(str(key)): WITHHELD_VALUE if CREDENTIAL_KEY.search(str(key)) and item not in (None, "", [], {}) else scrub_record(item)
+        return {scrub_text(str(key)): withheld_like(item) if CREDENTIAL_KEY.search(str(key)) and item not in (None, "", [], {}) else scrub_record(item)
                 for key, item in value.items()}
     return value
+
+
+def withheld_like(item):
+    """The placeholder for a value under a credential-named key. A list stays a list, so a map keyed by an object merely NAMED
+    `allow-secret-app` still reads as a list of strings in a report (the content is withheld either way)."""
+    return [WITHHELD_VALUE] if isinstance(item, (list, tuple)) else WITHHELD_VALUE
 
 
 # Junos MCP tools beyond the five read tools in the answer key: they change a device, run arbitrary commands, move

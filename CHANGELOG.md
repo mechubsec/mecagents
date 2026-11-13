@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- A list saved under a key that merely contains a credential word (a policy named `allow-secret-app`) is withheld as a
+  list, so the report no longer prints it one character per item.
+
 ## 0.0.1
 
 Still alpha quality.

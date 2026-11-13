@@ -288,3 +288,9 @@ def test_an_old_lock_with_a_loose_mode_is_tightened(tmp_path):
     with agent.recorded_run(tmp_path / "s.json"):
         pass
     assert (tmp_path / "s.lock").stat().st_mode & 0o777 == 0o600
+
+
+def test_a_list_under_a_credential_named_key_is_withheld_as_a_list():
+    record = agent.scrub_record({"flags": {"allow-secret-app": ["permit any/any/any", "no log"]}, "api_key": "hunter2", "private_key": ["a", "b"]})
+    assert record == {"flags": {"allow-secret-app": [agent.WITHHELD_VALUE]}, "api_key": agent.WITHHELD_VALUE, "private_key": [agent.WITHHELD_VALUE]}
+    assert "hunter2" not in str(record)
