@@ -50,12 +50,12 @@ systemctl --user enable --now labbot-pcicomplyagent-collect.timer labbot-pcicomp
 
 | | Agent | What it does |
 |---|---|---|
-| <img src="docs/assets/icons/pcicomplyagent.png" width="48" alt=""> | [`pcicomplyagent`](docs/agents/pcicomplyagent.md) | PCI DSS evidence review of one firewall, graded against an answer key |
+| <img src="docs/assets/icons/pcicomplyagent.png" width="48" alt=""> | [`pcicomplyagent`](docs/agents/pcicomplyagent.md) | PCI DSS evidence review of one firewall, graded against a key derived from its config |
 | <img src="docs/assets/icons/bpcheckagent.png" width="48" alt=""> | [`bpcheckagent`](docs/agents/bpcheckagent.md) | best-practice audit of one firewall, graded against a key derived from its config |
 | <img src="docs/assets/icons/driftagent.png" width="48" alt=""> | [`driftagent`](docs/agents/driftagent.md) | explains config drift from a golden copy; the model runs only on drift |
 | <img src="docs/assets/icons/socagent.png" width="48" alt=""> | [`socagent`](docs/agents/socagent.md) | investigates what `socbot` escalated, in SSDF event data |
 
 ## More
 
-- [docs/SETUP.md](docs/SETUP.md) · [docs/CAVEATS.md](docs/CAVEATS.md) · [docs/VERSIONING.md](docs/VERSIONING.md)
+- [docs/SETUP.md](docs/SETUP.md) · [docs/CAVEATS.md](docs/CAVEATS.md) · [docs/VERSIONING.md](docs/VERSIONING.md) · [docs/TRIGGER.md](docs/TRIGGER.md)
 - [CHANGELOG.md](CHANGELOG.md) · [LICENSE](LICENSE)

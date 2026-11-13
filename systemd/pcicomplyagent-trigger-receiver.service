@@ -1,0 +1,12 @@
+[Unit]
+Description=pcicomplyagent: commit-notification receiver (device event script -> triggered run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -I %h/labbots/bots/pcicomplyagent/trigger/receiver.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

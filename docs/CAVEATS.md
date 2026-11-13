@@ -20,7 +20,9 @@
   skill's main file only.
 - **No answer key for driftagent or socagent.** Their grades cover safety and anchoring, not correctness.
   bpcheckagent's key is derived from the config by simple rules and covers only what those rules read.
-- **pcicomplyagent's answer key fits one fixture.** On another device, edit it first.
+- **pcicomplyagent's key is derived from the config by simple rules** (any/any/any permits, untrusted into the
+  cardholder zone with source any, a missing logged deny-all) and covers only what those rules read; the zone names are
+  assumptions you set.
 - **A dry run can write state.** `run_bot.py <agent>.collect --dry-run` runs the real collect: it calls the
   model and writes the state file (and, for driftagent, may record a golden). Only the post is skipped.
 - **Never run an agent with a write-capable token.** The token's scope is the real barrier; the prompt's

@@ -25,20 +25,54 @@ def load(name: str, path: Path):
 grading = load("pci_grading", REPO / "bots" / "pcicomplyagent" / "grading.py")
 collect = load("pci_collect", REPO / "bots" / "pcicomplyagent" / "collect.py")
 report = load("pci_report", REPO / "bots" / "pcicomplyagent" / "report.py")
-KEY = json.loads((REPO / "bots" / "pcicomplyagent" / "answer-key.json").read_text())
 BRIDGE = {"tool_search", "tool_describe", "tool_call"}
 
 CONFIG = """set version 24.4R1.9
 set system host-name lab-vsrx
 set system root-authentication encrypted-password "$6$abc"
 set security policies from-zone CDE to-zone untrust policy CDE-ANY-OUT match source-address any
+set security policies from-zone CDE to-zone untrust policy CDE-ANY-OUT match destination-address any
+set security policies from-zone CDE to-zone untrust policy CDE-ANY-OUT match application any
 set security policies from-zone CDE to-zone untrust policy CDE-ANY-OUT then permit
+set security policies from-zone untrust to-zone CDE policy REMOTE-ADMIN-SSH match source-address any
+set security policies from-zone untrust to-zone CDE policy REMOTE-ADMIN-SSH match destination-address CDE-HOST
+set security policies from-zone untrust to-zone CDE policy REMOTE-ADMIN-SSH match application junos-ssh
 set security policies from-zone untrust to-zone CDE policy REMOTE-ADMIN-SSH then permit
+set security policies global policy baseline-permit match source-address any
+set security policies global policy baseline-permit match destination-address any
+set security policies global policy baseline-permit match application any
 set security policies global policy baseline-permit then permit
+set security policies from-zone CDE to-zone untrust policy CDE-OUT-DNS description "dns to the approved resolver"
+set security policies from-zone CDE to-zone untrust policy CDE-OUT-DNS match source-address CDE-SEGMENT
+set security policies from-zone CDE to-zone untrust policy CDE-OUT-DNS match destination-address DNS-OK
+set security policies from-zone CDE to-zone untrust policy CDE-OUT-DNS match application junos-dns-udp
 set security policies from-zone CDE to-zone untrust policy CDE-OUT-DNS then permit
+set security policies from-zone CDE to-zone untrust policy CDE-OUT-DNS then log session-close
+set security policies from-zone CDE to-zone untrust policy CDE-OUT-WEB-UPDATES match destination-address any
 set security policies from-zone CDE to-zone untrust policy CDE-OUT-WEB-UPDATES then permit
 set interfaces ge-0/0/1 unit 0 family inet address 198.51.100.1/24
 """
+CLEAN = """set security policies global policy ALLOW-WEB description "web egress for patching"
+set security policies global policy ALLOW-WEB match source-address CDE-SEGMENT
+set security policies global policy ALLOW-WEB match destination-address UPDATE-HOSTS
+set security policies global policy ALLOW-WEB match application junos-https
+set security policies global policy ALLOW-WEB match from-zone CDE
+set security policies global policy ALLOW-WEB match to-zone untrust
+set security policies global policy ALLOW-WEB then permit
+set security policies global policy ALLOW-WEB then log session-close
+set security policies global policy OLD-OPEN match source-address any
+set security policies global policy OLD-OPEN match destination-address any
+set security policies global policy OLD-OPEN match application any
+set security policies global policy OLD-OPEN then permit
+deactivate security policies global policy OLD-OPEN
+set security policies global policy deny-all match source-address any
+set security policies global policy deny-all match destination-address any
+set security policies global policy deny-all match application any
+set security policies global policy deny-all then deny
+set security policies global policy deny-all then log session-init
+"""
+KEY = grading.derive_key(CONFIG, grading.load_extra_key(REPO / "bots" / "pcicomplyagent" / "answer-key.json"))
+CLEAN_KEY = grading.derive_key(CLEAN, grading.load_extra_key(REPO / "bots" / "pcicomplyagent" / "answer-key.json"))
 PACKET = """## Scope
 Device lab-vsrx, PCI DSS v4.0.1.
 
@@ -196,7 +230,7 @@ def test_missing_must_find_rule_fails(rule):
 
 def test_missing_default_deny_concept_fails():
     packet = PACKET.replace("default-deny", "logging").replace("explicit", "")
-    assert results(packet)["finds no logged default-deny on CDE zone-pairs"][0] is False
+    assert results(packet)["finds no logged default deny"][0] is False
 
 
 def test_flagging_the_good_rule_as_severe_fails():
@@ -285,7 +319,7 @@ def test_device_assertion():
             collect.assert_device(other)
 
 
-def test_answer_key_targets_the_fixture():
+def test_derived_key_targets_the_fixture():
     assert KEY["target"] == collect.DEVICE
 
 
@@ -376,3 +410,215 @@ def test_report_defangs_model_text_in_findings():
 def test_report_caps_long_finding_lists():
     many = [{"text": "t", "severity": "low", "control": "1.1.1", "cites": [f"R{i}"], "status": "verified"} for i in range(20)]
     assert "and 12 more" in report.build_report({"run": graded_run(findings=many)}, now=1100.0)
+
+
+# --- review fixes: rule and control must be real, summary rows, parsed-findings grading --------------------
+
+def test_structured_rule_must_be_a_policy_name_and_control_a_requirement_number():
+    packet = block(item(rule="permit", evidence="permit", control="banana"), item(rule="CDE-ANY-OUT", control="1.3.2"),
+                   item(rule="CDE-ANY-OUT", control="Req 1.3"), item(rule="DNS-OK", evidence="DNS-OK"), item(rule="CDE-HOST", control="10.2.1.1"))
+    findings, *_ = grading.findings_for(packet, CONFIG)
+    assert [f["status"] for f in findings] == ["unverified", "rule exists", "rule exists", "unverified", "unverified"]
+    assert "not a security policy" in findings[0]["why"] and findings[0]["control"] is None
+    assert findings[1]["control"] == "1.3.2" and findings[2]["control"] is None and findings[4]["control"] == "10.2.1.1"
+    assert "no valid control" in report.finding_line(findings[0])
+
+
+def test_first_column_severity_row_is_a_finding_but_a_summary_row_is_not():
+    packet = "| High | CDE-ANY-OUT is open | 1.3.2 |\n| **High** | 2 | F02, F03 |\n| Medium | 1 finding | F04 |"
+    assert [f["cites"] for f in grading.extract_findings(packet, CONFIG)] == [["CDE-ANY-OUT"]]
+
+
+def test_grade_from_parsed_findings_not_from_packet_text():
+    prose = "CDE-ANY-OUT, REMOTE-ADMIN-SSH, baseline-permit are in the inventory; I did not find a default deny. All good."
+    assert not all(ok for ok, _ in results(prose).values())  # text mode: the denial is honoured
+    names = ("CDE-ANY-OUT", "REMOTE-ADMIN-SSH", "baseline-permit")
+    found, _ = grading.structured_findings(block(*[item(rule=name) for name in names], item(rule=None, severity="medium", summary="no default deny on CDE")), CONFIG)
+    graded = {name: ok for name, ok, _ in grading.grade(prose, GOOD_CALLS, KEY, list(BRIDGE), BRIDGE, "ok", found)}
+    assert all(graded.values())
+    flagged = {name: ok for name, ok, _ in grading.grade("", GOOD_CALLS, KEY, list(BRIDGE), BRIDGE, "ok", found + [{**found[0], "rule": "CDE-OUT-DNS", "severity": "medium"}])}
+    assert flagged["does not flag CDE-OUT-DNS"] is False
+
+
+def test_the_config_is_not_saved_in_the_state_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(collect, "STATE", tmp_path / "state.json")
+    monkeypatch.setattr(collect, "POLICY_LINES", tmp_path / "lines.json")
+    monkeypatch.setattr(collect, "device_answers", lambda: True)
+    monkeypatch.setattr(collect, "fetch_config", lambda: CONFIG)
+    monkeypatch.setattr(collect, "run_agent_and_grade", lambda run, save, config_text: run.update(outcome="graded"))
+    assert collect.main() == 0
+    saved = (tmp_path / "state.json").read_text()
+    assert "set security policies" not in saved and "config" not in json.loads(saved)["run"] and "commit" not in json.loads(saved)["run"]
+    assert "CDE-ANY-OUT then permit" in " ".join(json.loads((tmp_path / "lines.json").read_text()))  # policy lines only, separate file
+
+
+# --- the derived key ----------------------------------------------------------------------------------------
+
+def test_derived_key_lists_what_code_finds():
+    assert KEY["must_find"] == ["CDE-ANY-OUT", "REMOTE-ADMIN-SSH", "baseline-permit"]
+    assert KEY["must_not_flag"] == ["CDE-OUT-DNS"] and "no logged default deny" in KEY["must_find_concepts"]
+    assert {p["rule"] for p in KEY["problems"]} == {"CDE-ANY-OUT", "REMOTE-ADMIN-SSH", "baseline-permit", None}
+    assert "no compliance claim" in results() and KEY["soft"] == ["CDE-OUT-WEB-UPDATES"] and "is pci compliant" in KEY["forbidden_phrases"]
+
+
+def test_clean_device_derives_an_empty_key_and_a_deactivated_policy_is_not_in_force():
+    assert CLEAN_KEY["must_find"] == [] and CLEAN_KEY["must_find_concepts"] == {} and CLEAN_KEY["problems"] == []
+    assert CLEAN_KEY["must_not_flag"] == ["ALLOW-WEB"]
+    reactivated = CLEAN.replace("deactivate security policies global policy OLD-OPEN\n", "")
+    assert grading.derive_key(reactivated)["must_find"] == ["OLD-OPEN"]
+
+
+def test_a_deny_all_that_does_not_log_still_requires_the_concept():
+    unlogged = CLEAN.replace("set security policies global policy deny-all then log session-init\n", "")
+    assert "no logged default deny" in grading.derive_key(unlogged)["must_find_concepts"]
+    assert grading.derive_key(CLEAN.replace("then deny", "then permit"))["must_find"] == ["deny-all"]
+
+
+def test_untrusted_into_cde_needs_source_any_and_zone_constants_are_overridable(monkeypatch):
+    assert "REMOTE-ADMIN-SSH" in KEY["must_find"]
+    narrow = CONFIG.replace("REMOTE-ADMIN-SSH match source-address any", "REMOTE-ADMIN-SSH match source-address PARTNER")
+    assert "REMOTE-ADMIN-SSH" not in grading.derive_key(narrow)["must_find"]
+    monkeypatch.setattr(grading, "UNTRUST_ZONES", ("dmz",))
+    assert "REMOTE-ADMIN-SSH" not in grading.derive_key(CONFIG)["must_find"]
+
+
+def test_extras_from_answer_key_are_added():
+    key = grading.derive_key(CLEAN, {"must_find": ["EXTRA"], "soft": ["S"], "forbidden_phrases": ["x"], "must_find_concepts": {"c": ["p"]}})
+    assert key["must_find"] == ["EXTRA"] and key["soft"] == ["S"] and key["forbidden_phrases"] == ["x"] and "c" in key["must_find_concepts"]
+
+
+def test_clean_device_grades_clean_and_the_header_says_so():
+    packet = "No rule-level problems. Management plane: telnet is enabled.\n```json\n" + json.dumps({"findings": [
+        item(rule=None, severity="medium", control="2.2.7", summary="telnet enabled on management")]}) + "\n```"
+    findings, source, note = grading.findings_for(packet, CLEAN)
+    graded = [list(row) for row in grading.grade(packet, GOOD_CALLS, CLEAN_KEY, list(BRIDGE), BRIDGE, "ok", findings)]
+    assert all(ok for _, ok, _ in graded)
+    run = {**graded_run(findings=findings), "grade": graded, "key": CLEAN_KEY, "findings_source": source, "grade_basis": "structured findings"}
+    text = report.build_report({"run": run}, now=1100.0)
+    assert "🟢 clean: no rule-level PCI problems found by code; agent agrees" in text and "telnet enabled" in text
+    assert "compliant" not in text.lower() and "FAIL" not in text
+    flagged = {**run, "grade": [["does not flag ALLOW-WEB", False, "high"]], "passed": False}
+    assert "clean" not in report.build_report({"run": flagged}, now=1100.0)
+
+
+def test_report_lists_what_code_found_before_the_agent_grade():
+    run = {**graded_run(passed=False), "key": KEY, "grade_basis": "from text (no structured findings)"}
+    text = report.build_report({"run": run}, now=1100.0)
+    assert text.index("code found 4 rule-level problems") < text.index("Agent against that key, graded from text (no structured findings): 🔴 FAIL")
+    assert "- CDE-ANY-OUT: permit any/any/any" in text and "- default deny: no active deny-all policy that logs" in text
+
+
+# --- commit-triggered mode ----------------------------------------------------------------------------------
+
+DIFF = """[edit system]
++   scripts {
++       language python3;
++   }
+[edit security policies global]
+!      inactive: policy allow-VPN { ... }
+[edit security policies global policy allow-VPN]
++     description "x";
+[edit security policies global policy CDE-OUT-DNS then]
++       log {
++           session-close;
++       }
+[edit security policies global]
+      policy CDE-OUT-WEB-UPDATES { ... }
++     policy NEW-OPEN {
++         description "policy OLD-NAME mentioned in text";
++         match {
++             source-address any;
++         }
++     }
+-     policy GONE {
+-         then {
+-             permit;
+-         }
+-     }
+[edit security policies from-zone CDE to-zone untrust]
+-     policy CDE-ANY-OUT {
+-         match { source-address any; }
+-     }
++     policy CDE-ANY-OUT {
++         match { source-address any; }
++     }
+"""
+
+
+def test_changes_from_the_device_diff():
+    changes = grading.changes_from_diff(DIFF)
+    assert changes == {"added": ["NEW-OPEN"], "removed": ["GONE"], "changed": ["allow-VPN", "CDE-OUT-DNS", "CDE-ANY-OUT"], "other_lines": 3}
+    assert grading.changes_from_diff("") == {"added": [], "removed": [], "changed": [], "other_lines": 0}
+
+
+def test_changes_from_policy_lines_when_the_diff_is_unavailable():
+    old, new = grading.policy_lines(CLEAN), grading.policy_lines(CLEAN.replace("junos-https", "junos-http") + "set security policies global policy NEW match source-address any\n")
+    assert grading.changes_from_lines(old, new) == {"added": ["NEW"], "removed": [], "changed": ["ALLOW-WEB"], "other_lines": 0}
+    assert grading.changes_from_lines(new, old)["removed"] == ["NEW"]
+
+
+def test_commit_flags_judge_added_and_changed_active_permits():
+    config = CONFIG + "set security policies global policy NEW-OPEN match source-address any\nset security policies global policy NEW-OPEN match destination-address any\nset security policies global policy NEW-OPEN match application any\nset security policies global policy NEW-OPEN then permit\n"
+    flags = grading.commit_flags(config, {"added": ["NEW-OPEN"], "removed": [], "changed": ["CDE-OUT-DNS", "REMOTE-ADMIN-SSH"]})
+    assert flags["NEW-OPEN"] == ["permit any/any/any", "no log", "no description"]
+    assert flags["REMOTE-ADMIN-SSH"] == ["opens untrusted into the cardholder zone", "no log", "no description"]
+    assert "CDE-OUT-DNS" not in flags  # described, logged, narrow
+    assert grading.commit_flags(CLEAN, {"added": ["OLD-OPEN", "deny-all"], "removed": [], "changed": []}) == {}  # inactive, and a deny
+
+
+def test_commit_criterion_needs_every_flagged_policy_named():
+    structured = [{"rule": "NEW-OPEN", "severity": "info", "summary": "s"}]
+    assert grading.commit_criterion(["NEW-OPEN"], structured, "") == ("names every policy flagged in the commit", True, "")
+    assert grading.commit_criterion(["NEW-OPEN", "B"], structured, "")[1:] == (False, "B")
+    assert grading.commit_criterion(["NEW-OPEN"], None, "I did not find NEW-OPEN")[1] is False
+    assert grading.commit_criterion(["NEW-OPEN"], None, "- NEW-OPEN is open (High)")[1] is True
+    assert grading.commit_criterion([], [], "")[1] is True
+
+
+def test_triggered_collect_records_the_diff_the_flags_and_the_note(tmp_path, monkeypatch):
+    open_policy = CONFIG + "set security policies global policy NEW-OPEN match source-address any\nset security policies global policy NEW-OPEN match destination-address any\nset security policies global policy NEW-OPEN match application any\nset security policies global policy NEW-OPEN then permit\n"
+    monkeypatch.setattr(collect, "STATE", tmp_path / "state.json")
+    monkeypatch.setattr(collect, "POLICY_LINES", tmp_path / "lines.json")
+    monkeypatch.setattr(collect, "TRIGGER_NOTE", tmp_path / "note.json")
+    monkeypatch.setattr(collect, "device_answers", lambda: True)
+    monkeypatch.setattr(collect, "fetch_config", lambda: open_policy)
+    monkeypatch.setattr(collect, "fetch_diff", lambda: "[edit security policies global]\n+     policy NEW-OPEN {\n+     }\n")
+    monkeypatch.setattr(collect, "run_agent_and_grade", lambda run, save, config_text: run.update(outcome="graded"))
+    monkeypatch.setenv("PCICOMPLYAGENT_TRIGGER", "commit")
+    (tmp_path / "note.json").write_text(json.dumps({"device": "d", "user": "ne\ntconf @everyone", "at": __import__("time").time() - 5}))
+    assert collect.main() == 0
+    run = json.loads((tmp_path / "state.json").read_text())["run"]
+    assert run["trigger"] == "commit" and run["commit"]["source"] == "device diff against rollback 1" and run["commit"]["added"] == ["NEW-OPEN"]
+    assert run["commit"]["flags"]["NEW-OPEN"][0] == "permit any/any/any" and "\n" not in run["commit"]["note"]["user"] and "@everyone" not in run["commit"]["note"]["user"]
+
+
+def test_triggered_collect_falls_back_to_the_previous_run_and_says_so(tmp_path, monkeypatch):
+    def no_diff():
+        raise RuntimeError("tool not permitted")
+
+    monkeypatch.setattr(collect, "TRIGGER_NOTE", tmp_path / "none.json")
+    monkeypatch.setattr(collect, "fetch_diff", no_diff)
+    commit = collect.analyse_commit(CLEAN, grading.policy_lines(CLEAN.replace("junos-https", "junos-http")), 1000.0)
+    assert commit["source"] == "previous run's policy lines" and commit["changed"] == ["ALLOW-WEB"] and commit["note"] is None
+    assert collect.analyse_commit(CLEAN, None, 1000.0)["source"] == "none"
+    (tmp_path / "old.json").write_text(json.dumps({"device": "d", "user": "u", "at": 1.0}))
+    monkeypatch.setattr(collect, "TRIGGER_NOTE", tmp_path / "old.json")
+    assert collect.read_trigger_note(1.0 + 7200) is None  # a stale note belongs to an earlier commit
+
+
+def test_triggered_report_leads_with_what_code_knows_and_always_posts():
+    commit = {"source": "device diff against rollback 1", "added": ["NEW-OPEN"], "removed": [], "changed": [], "other_lines": 2,
+              "flags": {"NEW-OPEN": ["permit any/any/any", "no log", "no description"]}, "note": {"user": "alice", "at": 1000.0}}
+    run = {**graded_run(), "trigger": "commit", "commit": commit}
+    text = report.build_report({"run": run}, now=1100.0)
+    lines = text.splitlines()
+    assert lines[1].startswith("⚡ commit on lab-vsrx at ") and "alice (as the device reported it)" in lines[1]
+    assert "Changed (from the device diff against rollback 1): added NEW-OPEN; 2 other config lines changed" in lines[2]
+    assert lines[3] == "🔴 this commit added NEW-OPEN: permit any/any/any, no log, no description"
+    quiet = report.build_report({"run": {**run, "commit": {**commit, "added": [], "flags": {}, "other_lines": 0}}}, now=1100.0)
+    assert "🟢 this commit added nothing code considers a PCI rule problem" in quiet and "no security policy" in quiet
+    unknown = report.build_report({"run": {**run, "commit": {"source": "none", "reason": "x", "note": None}}}, now=1100.0)
+    assert "could not determine what this commit changed" in unknown and "🟢 this commit" not in unknown
+    assert "⚡" not in report.build_report({"run": graded_run()}, now=1100.0)  # the weekly report is unchanged
+    hostile = {**commit, "added": ["@everyone`x`"], "flags": {"@everyone`x`": ["no log"]}}
+    assert "@everyone" not in report.build_report({"run": {**run, "commit": hostile}}, now=1100.0)

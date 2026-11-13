@@ -108,7 +108,7 @@ loginctl enable-linger "$USER"
 Each agent has a collect timer and a report timer; the shipped drop-ins make the report wait for the collect.
 There are no quiet hours: times are in the timers. The collect needs the model loaded; allow for a cold start.
 
-pcicomplyagent needs `answer-key.json` edited to your device (see its page). driftagent records its golden on
+pcicomplyagent derives its key from the device's config; check the zone names (`PCICOMPLYAGENT_UNTRUST_ZONES`, `PCICOMPLYAGENT_CDE_ZONES`) on its page. driftagent records its golden on
 the first collect, so make sure the device is in its intended state then.
 
 First check: `python3 -I bin/run_bot.py <agent>.collect --dry-run`, then `python3 -I bin/run_bot.py <agent> --dry-run`.

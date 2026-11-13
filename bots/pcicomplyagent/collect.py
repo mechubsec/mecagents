@@ -1,12 +1,14 @@
 """pcicomplyagent collect (Sunday 22:00): the first labbots *agent*. A local model (qwen3-coder-next through a Hermes
 profile) runs a PCI evidence prompt itself, with two skills and a read-only Junos MCP token scoped to one PCI fixture
 device (default `lab-vsrx`); deterministic code then checks what it claims against the device's own config and grades it
-against answer-key.json. Posts nothing; the Monday report reads what this saves.
+against a key derived from that config (grading.derive_key). Posts nothing; the Monday report reads what this saves.
 
 Order: (1) check the fixture answers through the agent's own read-only token (it stays on permanently; this agent
 starts and stops nothing and makes no Proxmox call); (2) fetch the active config with that token as independent
-evidence; (3) one Hermes one-shot, after proving the model is offered nothing but the MCP bridge; (4) extract and
-verify findings, grade. The run is marked complete only at the very end.
+evidence (kept in memory only, never saved to the state file); (3) when PCICOMPLYAGENT_TRIGGER=commit (the commit-
+triggered unit sets it), ask the device what the last commit changed and let code flag the policies; (4) one Hermes
+one-shot, after proving the model is offered nothing but the MCP bridge; (5) extract and verify findings, grade. The
+run is marked complete only at the very end.
 
 Safety: the device is asserted before every call, the model's token cannot write, the model has no shell, file, web
 or messaging tool, and its text is untrusted: it is stored and graded, never executed or interpreted."""
@@ -31,6 +33,9 @@ SKILLS = "parsing-srx-configs,pci-ngfw-compliance"
 STATE = Path(os.environ.get("PCICOMPLYAGENT_STATE", Path.home() / ".local/state/labbots/pcicomplyagent.json"))
 AGENT_TIMEOUT = 1800  # plus the preflight (<=600 s): must stay under LABBOTS_TIMEOUT in the systemd drop-in
 HERE = Path(__file__).resolve().parent
+POLICY_LINES = STATE.with_name("pcicomplyagent-policy-lines.json")  # fallback baseline for a triggered run
+TRIGGER_NOTE = Path(os.environ.get("TRIGGER_NOTE_FILE", STATE.with_name("pcicomplyagent-trigger.json")))  # left by the receiver
+NOTE_MAX_AGE = 3600  # a note older than this belongs to some earlier commit, not to this run
 
 
 def assert_device(device) -> None:
@@ -54,15 +59,68 @@ def fetch_config() -> str:
     return agent.mcp_call_text(JUNOS_MCP, "get_junos_config", arguments)
 
 
+def triggered() -> bool:
+    """True when this run was started by a commit notice (the triggered unit sets PCICOMPLYAGENT_TRIGGER=commit)."""
+    return os.environ.get("PCICOMPLYAGENT_TRIGGER") == "commit"
+
+
+def fetch_diff() -> str:
+    """What the last commit changed: the device's diff against rollback 1, through the agent's read-only token."""
+    arguments = {"device": DEVICE, "version": 1}
+    assert_device(arguments["device"])
+    return agent.mcp_call_text(JUNOS_MCP, "junos_config_diff", arguments)
+
+
+def load_policy_lines():
+    """The policy lines saved by the previous collect, or None."""
+    try:
+        lines = json.loads(POLICY_LINES.read_text())
+    except (OSError, ValueError):
+        return None
+    return lines if isinstance(lines, list) and all(isinstance(line, str) for line in lines) else None
+
+
+def save_policy_lines(lines: list[str]) -> None:
+    """Keep this run's policy lines (set/deactivate security policies only: no secrets) for the next; atomic, mode 600."""
+    agent.write_private_atomic(POLICY_LINES, json.dumps(lines))
+
+
+def read_trigger_note(now: float):
+    """{device, user, at} from the receiver's note, or None when absent, unreadable or older than NOTE_MAX_AGE. The text
+    is the device's own report: it is capped and defanged here and used only for display."""
+    try:
+        note = json.loads(TRIGGER_NOTE.read_text())
+        received = float(note["at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not 0 <= now - received <= NOTE_MAX_AGE:
+        return None
+    return {"device": agent.defang(note.get("device", ""), 40), "user": agent.defang(note.get("user", ""), 32), "at": received}
+
+
+def analyse_commit(config_text: str, previous_lines, now: float) -> dict:
+    """What the commit changed and which changed policies code flags: from the device's rollback-1 diff when the token
+    can provide it, else from the previous run's policy lines (`source` says which), else nothing (`source` "none")."""
+    note = read_trigger_note(now)
+    try:
+        changes, source = grading.changes_from_diff(fetch_diff()), "device diff against rollback 1"
+    except Exception as exc:  # token or tool cannot give the diff: fall back, and say so
+        if previous_lines is None:
+            return {"source": "none", "reason": f"{type(exc).__name__}: {str(exc)[:150]}", "note": note}
+        changes, source = grading.changes_from_lines(previous_lines, grading.policy_lines(config_text)), "previous run's policy lines"
+    return {"source": source, **changes, "flags": grading.commit_flags(config_text, changes), "note": note}
+
+
 def timed(run: dict, phase: str, started: float) -> None:
     """Record how long a phase took, in seconds."""
     run["phases"][phase] = round(time.time() - started)
 
 
 def run_agent_and_grade(run: dict, save, config_text: str) -> None:
-    """Phases 3 and 4: the Hermes one-shot, then findings and grade, recorded into `run`."""
-    key = json.loads((HERE / "answer-key.json").read_text())
+    """Phases 4 and 5: the Hermes one-shot, then findings and grade against the derived key, recorded into `run`."""
+    key = grading.derive_key(config_text, grading.load_extra_key(HERE / "answer-key.json"))
     assert_device(key["target"])
+    run["key"] = key
     started = time.time()
     run["tools_offered_preflight"] = agent.preflight_offered_tools(PROFILE, MODEL, SKILLS)
     save()
@@ -78,7 +136,11 @@ def run_agent_and_grade(run: dict, save, config_text: str) -> None:
     # a file the model wrote (it has no file tool, so normally none) is part of its answer
     packet = "\n\n".join([result["output"], *result["files"].values()])
     run["findings"], run["findings_source"], run["findings_note"] = grading.findings_for(packet, config_text)
-    run["grade"] = grading.grade(packet, facts["calls"], key, facts["tools_offered"], agent.BRIDGE_TOOLS, result["status"])
+    scored = run["findings"] if run["findings_source"] == "structured" else None  # no valid block: score the text
+    run["grade_basis"] = "structured findings" if scored is not None else "from text (no structured findings)"
+    run["grade"] = grading.grade(packet, facts["calls"], key, facts["tools_offered"], agent.BRIDGE_TOOLS, result["status"], scored)
+    if run.get("commit"):
+        run["grade"].append(grading.commit_criterion(sorted(run["commit"].get("flags", {})), scored, packet))
     run["passed"] = all(ok for _, ok, _ in run["grade"])
     timed(run, "verify", started)
 
@@ -96,8 +158,11 @@ def main() -> int:
                 return finish()
             timed(run, "preflight", started)
             started = time.time()
-            config_text = grading.scrub_config(fetch_config())
-            run.update(config=config_text)
+            config_text = grading.scrub_config(fetch_config())  # memory only: the report never reads it, the state file is long-lived
+            previous_lines = load_policy_lines()
+            if triggered():
+                run.update(trigger="commit", commit=analyse_commit(config_text, previous_lines, time.time()))
+            save_policy_lines(grading.policy_lines(config_text))
             timed(run, "evidence", started)
             save()
             run_agent_and_grade(run, save, config_text)

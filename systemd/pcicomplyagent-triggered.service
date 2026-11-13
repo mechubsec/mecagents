@@ -1,0 +1,15 @@
+[Unit]
+Description=pcicomplyagent: run triggered by a commit on the target device
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# own unit, not labbot@: the quiet-hours ExecCondition deliberately does not apply
+TimeoutStartSec=1800
+# hermes lives in ~/.local/bin, which a user unit's default PATH lacks
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+# makes the collect ask the device what the commit changed, and the report lead with it
+Environment=PCICOMPLYAGENT_TRIGGER=commit
+ExecStart=/usr/bin/python3 -I %h/labbots/bin/run_bot.py pcicomplyagent.collect
+ExecStart=/usr/bin/python3 -I %h/labbots/bin/run_bot.py pcicomplyagent

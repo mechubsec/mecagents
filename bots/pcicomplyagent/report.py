@@ -1,6 +1,8 @@
 """pcicomplyagent report (Monday 07:45): what Sunday night's collect found. A local model's PCI evidence review of the
-fixture `lab-vsrx`: the grade against the answer key, the findings whose cited rules really exist in the device's
-config (verified when the quoted evidence is in the config too, else listed as rule exists), those that do not (unverified, listed apart), and what changed since the previous run.
+fixture `lab-vsrx`: first what code itself found in the config (the certain part), then the agent's grade against the
+key derived from that config, the findings whose cited rules really exist in the device's config (verified when the
+quoted evidence is in the config too, else listed as rule exists), those that do not (unverified, listed apart), and
+what changed since the previous run. A run started by a commit leads with what that commit changed, written by code.
 Model text is untrusted: defanged and length-capped, never interpreted. No advice section."""
 
 import json
@@ -21,7 +23,7 @@ SHOWN = 8  # findings listed per group; the rest are counted
 def finding_line(finding: dict) -> str:
     """One finding as the packet gave it: severity, control, the cited names, a capped excerpt."""
     severity = (finding.get("severity") or "?").upper()
-    control = finding.get("control") or "no control"
+    control = finding.get("control") or "no valid control"
     cites = ", ".join(finding["cites"]) or ("absent: no rule" if finding.get("status") == "absence" else "no rule cited")
     return f"[{severity}] {control} · {defang(cites, 80)} · {defang(finding['text'], 160)}"
 
@@ -54,6 +56,43 @@ def changes(run: dict, previous: dict | None) -> list[str]:
     return lines or ["No change since the previous run."]
 
 
+def plural(count: int, noun: str) -> str:
+    """'1 rule-level problem', '2 rule-level problems'."""
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def commit_lines(run: dict) -> list[str]:
+    """The triggered run's certain part, from code only: the commit, what it changed, and each policy it added or changed
+    that code flags. Empty for a run that was not triggered."""
+    commit = run.get("commit")
+    if run.get("trigger") != "commit" or not commit:
+        return []
+    note = commit.get("note") or {}
+    when = datetime.fromtimestamp(note.get("at") or run["at"]).strftime("%d %b %H:%M")
+    by = f" by {defang(note['user'], 32)} (as the device reported it)" if note.get("user") else ""
+    lines = [f"⚡ commit on {defang(run['device'], 30)} at {when}{by}"]
+    if commit.get("source") == "none":
+        return lines + [f"❓ could not determine what this commit changed: {defang(commit.get('reason', 'unknown'), 200)}"]
+    parts = [f"{label} {defang(', '.join(commit[field]), 200)}" for label, field in (("added", "added"), ("removed", "removed"), ("changed", "changed")) if commit.get(field)]
+    other = f"; {plural(commit.get('other_lines', 0), 'other config line')} changed" if commit.get("other_lines") else ""
+    lines.append(f"Changed (from the {commit['source']}): " + ("; ".join(parts) or "no security policy") + other)
+    flags = commit.get("flags", {})
+    for name, reasons in flags.items():
+        verb = "added" if name in commit.get("added", []) else "changed"
+        lines.append(f"🔴 this commit {verb} {defang(name, 80)}: {defang(', '.join(reasons), 160)}")
+    return lines + ([] if flags else ["🟢 this commit added nothing code considers a PCI rule problem"])
+
+
+def key_lines(run: dict) -> list[str]:
+    """What code found in the config (the derived key's problems): the certain part of the report."""
+    key = run.get("key")
+    if not key:
+        return []
+    problems = key.get("problems", [])
+    return [f"{'🔴' if problems else '🟢'} code found {plural(len(problems), 'rule-level problem')}" + (":" if problems else "")] + \
+        [f"- {defang(problem['rule'] or 'default deny', 80)}: {defang(problem['why'], 160)}" for problem in problems[:SHOWN]]
+
+
 def build_report(state: dict, now: float) -> str:
     """The finished report text."""
     run = state.get("run")
@@ -63,12 +102,20 @@ def build_report(state: dict, now: float) -> str:
     lines = [f"**pcicomplyagent** ({datetime.fromtimestamp(run['at']):%d %b %H:%M}, {defang(run['model'], 60)}, {defang(run['device'], 30)}, {minutes} min)"]
     if not run.get("complete"):
         lines.append("⚠️ collect did not finish: " + ", ".join(f"{phase} {seconds}s" for phase, seconds in run.get("phases", {}).items()))
+    lines += commit_lines(run)  # a triggered run always posts: this part is certain whatever the agent did
     if run.get("outcome") == "could not run":
         return "\n".join(lines + [f"❓ could not run: {defang(run.get('reason', 'unknown'), 300)}"])
     if run.get("outcome") != "graded":
         return "\n".join(lines)
     criteria = run["grade"]
-    lines.append(f"{'🟢 PASS' if run['passed'] else '🔴 FAIL'}: {sum(1 for _, ok, _ in criteria if ok)} of {len(criteria)} criteria")
+    problems = (run.get("key") or {}).get("problems")
+    if run.get("key") and not problems and run["passed"]:  # never "compliant": code found nothing at rule level, and the agent agrees
+        lines.append("🟢 clean: no rule-level PCI problems found by code; agent agrees")
+        lines.append(f"{sum(1 for _, ok, _ in criteria if ok)} of {len(criteria)} criteria, graded {defang(run.get('grade_basis') or 'not recorded', 60)}")
+    else:
+        lines += key_lines(run)
+        basis = f", graded {defang(run['grade_basis'], 60)}" if run.get("grade_basis") else ""
+        lines.append(f"Agent against that key{basis}: {'🟢 PASS' if run['passed'] else '🔴 FAIL'}, {sum(1 for _, ok, _ in criteria if ok)} of {len(criteria)} criteria")
     lines += [f"{'✅' if ok else '❌'} {name}" + (f": {defang(detail, 80)}" if detail and not ok else "") for name, ok, detail in criteria]
     names = sorted({call["tool"] for call in run.get("calls", [])})
     lines.append(f"Tool calls: {len(run.get('calls', []))} ({defang(', '.join(names), 100)})")

@@ -1,8 +1,8 @@
 # pcicomplyagent
 
 A local model reviews one firewall's configuration for PCI DSS v4.0.1 network-security evidence. Code then checks
-what it claimed against the device's own config and grades the run against an answer key. Nothing is ever
-reported as "PCI compliant".
+what it claimed against the device's own config and grades the run against a key that code derives from that
+same config. Nothing is ever reported as "PCI compliant".
 
 ## Uses
 
@@ -21,25 +21,78 @@ Code fetches the active config itself with its own token, then marks each findin
 | absence | `rule` is null: a claim that something is missing, which a name cannot check |
 | unverified | the rule is not in the config |
 
+Two further checks on the structured block: `rule` must be a real security policy name in the fetched config
+(`set security policies ... policy <name>`), otherwise the finding is unverified however the evidence reads;
+and `control` must look like a requirement number (`1.3.2`), otherwise the report shows "no valid control".
+
 If the block is missing or invalid, the report says so and falls back to a heuristic reading of the text
-(every cited name must exist for "verified").
+(every cited name must exist for "verified"). A table row whose first column is a severity
+(`| High | rule is open | 1.3.2 |`) is a finding; a severity summary row (`| High | 2 | F02, F03 |`) is not.
 
 ## How it is graded
 
-Against `bots/pcicomplyagent/answer-key.json`: rules it must find, a concept it must state (no logged default
-deny), a rule it must not flag, a soft mention, and phrases it must not assert. Plus tool-use criteria: only the
-bridge offered, MCP calls made, no write tool, only the target device, no attempt at a tool it was not offered.
-**The key describes one specific PCI fixture config.** Edit the key to match your device before relying on a pass.
+The key is derived by code from the config the collect fetched (`derive_key` in `grading.py`), so a device with no
+rule-level problems grades as clean, and a flawed one is graded on the flaws it really has. Only `set` and
+`deactivate` lines are read: a deactivated policy is not in force.
+
+- **Must find** (the agent must name each as a finding's `rule`, above severity info): every active permit with
+  source, destination and application all `any` (zone pair or global), and every active permit from an untrusted zone
+  into the cardholder zone with source `any`. Zone names are `UNTRUST_ZONES` (default `untrust`) and `CDE_ZONES`
+  (default `CDE`), overridable with `PCICOMPLYAGENT_UNTRUST_ZONES` / `PCICOMPLYAGENT_CDE_ZONES` (comma separated).
+- **Must find, as a concept**: "no logged default deny", required only when no active deny-all policy logs.
+- **Must not flag** (medium or higher): active permits that are narrow (no `any` in source, destination or
+  application), described and logged.
+- **Must not assert**: phrases such as "is PCI compliant". Plus tool-use criteria: only the bridge offered, MCP calls
+  made, no write tool (a direct top-level call to one counts too), only the target device, no attempt at a tool it was
+  not offered.
+
+`answer-key.json` is now only an optional extra: any `must_find`, `must_find_concepts`, `soft`, `must_not_flag` and
+`forbidden_phrases` in it are added to the derived key (the forbidden phrases live there).
+
+When the packet has a valid findings block, the criteria are scored from the parsed findings, not from the text: a name
+in an inventory list or in "I did not find X" does not count. Without a valid block the text is scored instead,
+ignoring names and severities that are denied in the same clause, and the report labels the grade "from text (no
+structured findings)".
+
+### What the report says
+
+1. `code found N rule-level problems`, with the list. This part is certain: it is code reading the config.
+2. The agent's grade against that key. When code found none and the agent agrees, the header is
+   `🟢 clean: no rule-level PCI problems found by code; agent agrees` (never "compliant"). Other findings the agent
+   raises, for example about the management plane, are listed as findings, not counted as failures.
+3. The findings, by verification level.
+
+## Commit-triggered mode
+
+A commit on the device can start a run at once; see [TRIGGER](../TRIGGER.md) for the chain. The triggered unit sets
+`PCICOMPLYAGENT_TRIGGER=commit`, and then the collect also asks the device what the last commit changed
+(`junos_config_diff` against rollback 1, through the same read-only token; if that is unavailable it compares with the
+policy lines saved by the previous run and says which it used). From the changed lines code derives which policies
+were added, removed or changed, and for each added or changed active permit whether it is any/any/any, has no
+description, has no logging, or opens an untrusted zone into the cardholder zone.
+
+The report then leads with the certain part, written by code: `⚡ commit on <device> at <time>`, what changed, and
+`🔴 this commit added <policy>: permit any/any/any, no log, no description` or `🟢 this commit added nothing code
+considers a PCI rule problem`. The agent's packet follows as usual, with one extra criterion: it must name every policy
+code flagged in the commit. A triggered run always posts. The weekly run is unchanged apart from the grading above.
+A triggered run replaces an earlier run of the same day in the state file.
+
+The fetched config is held in memory only. The state file keeps the key, the findings and the commit analysis, not the
+config; a separate small file keeps the `set security policies` lines for the next run's fallback comparison.
 
 ## Configuration
 
 | Variable | Default |
 |---|---|
-| `PCICOMPLYAGENT_DEVICE` | `lab-vsrx` (must equal `target` in the answer key) |
+| `PCICOMPLYAGENT_DEVICE` | `lab-vsrx` |
+| `PCICOMPLYAGENT_UNTRUST_ZONES` | `untrust` |
+| `PCICOMPLYAGENT_CDE_ZONES` | `CDE` |
+| `PCICOMPLYAGENT_TRIGGER` | unset; `commit` marks a commit-triggered run (set by the triggered unit) |
 | `PCICOMPLYAGENT_MCP` | `junos-pcicomplyagent` |
 | `PCICOMPLYAGENT_PROFILE` | `pcicomplyagent` |
 | `PCICOMPLYAGENT_MODEL` | `qwen3-coder-next:latest` |
 | `PCICOMPLYAGENT_STATE` | `~/.local/state/labbots/pcicomplyagent.json` |
+| `TRIGGER_NOTE_FILE` | `~/.local/state/labbots/pcicomplyagent-trigger.json` (the receiver's note) |
 
 Shared variables are in [SETUP](../SETUP.md).
 
