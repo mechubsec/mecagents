@@ -345,7 +345,7 @@ def test_the_fetch_uses_the_absolute_window_socbot_looked_at_not_now():
 
     collect.fetch_item_data(ITEM, NOW, call)
     collect.fetch_item_data({"kind": "deny-spike", "facts": {}}, NOW, call)
-    assert set(seen) == {"2027-01-14T08:00:00Z"} and len(seen) == len(collect.ALERT_PROVIDERS) + len(collect.DENY_ACTIONS)  # NOW - 24 h
+    assert set(seen) == {"2027-01-14T07:50:00Z"} and len(seen) == len(collect.ALERT_PROVIDERS) + len(collect.DENY_ACTIONS)  # NOW - 24 h - QUERY_SLACK
     assert collect.fetch_item_data({"kind": "firewall-quiet", "facts": {"firewall": "x"}}, NOW, lambda tool, arguments: {"firewalls": []}) == (set(), 0)
 
 
@@ -408,7 +408,7 @@ def test_evidence_stamped_after_the_queue_was_written_is_not_support_and_flows_e
     assert rows == len(collect.ALERT_PROVIDERS) and good["source_ip"] in values and not {"late-host", "untimed-host"} & values
     values, rows = collect.fetch_item_data({"kind": "deny-spike", "facts": {}}, NOW, call)
     assert rows == len(collect.DENY_ACTIONS) and "late-host" not in values
-    assert {arguments["until"] for arguments in flow_calls} == {"2027-01-15T08:00:00Z"} and {arguments["since"] for arguments in flow_calls} == {"2027-01-14T08:00:00Z"}
+    assert {arguments["until"] for arguments in flow_calls} == {"2027-01-15T08:00:00Z"} and {arguments["since"] for arguments in flow_calls} == {"2027-01-14T07:50:00Z"}
     assert grading.row_time({"timestamp": "2027-01-15T08:00:00Z"}) == NOW and grading.row_time({"timestamp": "2027-01-15 08:00:00.000"}) == NOW
     assert grading.row_time({"timestamp": "yesterday"}) is None and grading.row_time({}) is None and grading.row_time("x") is None
     quiet = {"firewalls": [{"name": "fw-a"}]}  # an ingest_status snapshot has no stamp and is never filtered

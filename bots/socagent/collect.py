@@ -31,6 +31,7 @@ STATE = Path(os.environ.get("SOCAGENT_STATE", Path.home() / ".local/state/labbot
 QUEUE = Path(os.environ.get("SOCAGENT_QUEUE", Path.home() / ".local/state/labbots/socbot-escalations.json"))
 QUEUE_MAX_AGE = 20 * 3600
 MAX_ITEMS = 3
+QUERY_SLACK = 600  # socbot stamps the queue after its own `now-24h` queries ran: start this much earlier so their first minutes are covered
 AGENT_TIMEOUT = 1200  # per item; plus one preflight (<=600 s): 3 items stay under LABBOTS_TIMEOUT in the systemd drop-in
 HERE = Path(__file__).resolve().parent
 DENY_ACTIONS = ("flow_session_deny", "flow_deny", "flow_drop")
@@ -63,7 +64,7 @@ def fetch_item_data(item: dict, at: float, call=None) -> tuple[set, int]:
     token for the 24 h window socbot looked at (the 24 h ending at the queue's `at`, as absolute times, not "now": `until` where the
     tool takes it, else rows stamped after `at` are dropped);
     `rows` counts the matching rows. `call(tool, arguments)` returns one raw reply."""
-    since, until = (datetime.fromtimestamp(moment, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") for moment in (at - 24 * 3600, at))
+    since, until = (datetime.fromtimestamp(moment, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") for moment in (at - 24 * 3600 - QUERY_SLACK, at))
     call = call or (lambda tool, arguments: mcp_call_tools(SSDF_MCP, [(tool, arguments)])[0])
     kind, facts = item["kind"], item["facts"]
     if kind == "new-high-alert":
