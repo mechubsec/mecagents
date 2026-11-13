@@ -1,9 +1,9 @@
 # Changelog
 
-## 0.1.0
+## 0.0.1-alpha
 
-First release: `pcicomplyagent`, `bpcheckagent`, `driftagent`, `socagent`, and the shared `lib/agent.py`
-(strict findings parser, offered-tool proof, recorded runs, grading). Needs mecbots 0.2.0 or later; see
+First public release, alpha: `pcicomplyagent`, `bpcheckagent`, `driftagent`, `socagent`, and the shared `lib/agent.py`
+(strict findings parser, offered-tool proof, recorded runs, grading). Needs mecbots 0.0.1-alpha or later; see
 `docs/VERSIONING.md`.
 
 Included in this release, from review: the parsed findings grade the run (and the report says so); credential fields match as whole

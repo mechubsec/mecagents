@@ -32,7 +32,7 @@
   in prose with no credential field name near it can pass. State files are mode 600.
 - **Never run an agent with a write-capable token.** The token's scope is the real barrier; the prompt's
   "read only" is not.
-- **Discord is a cloud service.** Reports name devices and rules. The mecbots runner (0.2.0 or later, which
+- **Discord is a cloud service.** Reports name devices and rules. The mecbots runner (0.0.1-alpha or later, which
   this release needs) scrubs Discord text and keeps full reports local; check its redact list covers your
   devices before pointing agents at a shared server.
 - **Do not put a self-hosted CI runner on a repo that may go public.** A pull request can run code on it.
