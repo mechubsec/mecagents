@@ -34,7 +34,8 @@ so the same name in two zone pairs is two objects and one mention cannot cover b
 Configs are compared as sets of lines, so a pure reorder is not drift, and lines holding a credential field
 (`encrypted-password`, `pre-shared-key`, `private-key`, `secret "..."`, `authentication-key`, SNMP community...) or key material
 (PEM `-----BEGIN`, SSH keys) are dropped from both sides, so a rotated secret is invisible. A field counts as a whole token followed by
-a value, so a name that merely contains `secret` or `authentication-password-reset` is compared normally.
+a value, so a name that merely contains `secret` or `authentication-password-reset` is compared normally. SSH algorithm-name
+settings (`system services ssh hostkey-algorithm`, `key-exchange`, `ciphers`, `macs`) hold no key and are compared.
 
 ## Credentials in model text
 

@@ -4,6 +4,7 @@ code's own work and are certain, the model's reading is only graded, never trust
 
 Shortcut: configs are compared as sets of lines, so a pure reorder (policy order matters in Junos) is not drift, and
 a line the server redacts or that carries a credential is dropped from both sides, so a rotated secret is invisible.
+An SSH algorithm-name setting (`system services ssh hostkey-algorithm|key-exchange|ciphers|macs ...`) is not key material and is kept.
 `deactivate ...` lines are compared like `set` lines (a deactivated policy is a change). Policies are keyed
 `from-zone/to-zone/name` (or `global/name`) and address-book entries `book/name`, so equal names in two places are two objects.
 Credential lines are matched by lib/agent.py's SECRET_LINE: a field token followed by a value, key material, `secret "..."`, `snmp ...
@@ -33,6 +34,8 @@ OBJECT_PATTERNS = [  # (regex over the line after "set "/"deactivate ", kind; ev
     (re.compile(r"^applications application(?:-set)? (\S+)"), "other"),
     (re.compile(r"^security nat \S+ rule-set (\S+)(?: rule (\S+))?"), "other"),
 ]
+# an SSH algorithm-name setting (`hostkey-algorithm ssh-ed25519`): it only matches SECRET_LINE through the key-type name, and holds no key
+ALGORITHM_LINE = re.compile(r"^(?:set|deactivate) system services ssh (?:hostkey-algorithm|pubkey-algorithm|key-exchange|ciphers|macs)(?: (?:\[|\]|(?!\S*key)[\w@.+-]{1,48}))+$")
 ZONE_INTERFACE = re.compile(r"^security zones security-zone \S+ interfaces (\S+)")
 INTERFACE = re.compile(r"^interfaces (\S+)(?: unit (\d+))?")
 
@@ -43,7 +46,7 @@ def normalise(config_text: str) -> list[str]:
     lines, seen = [], set()
     for raw in config_text.splitlines():
         line = " ".join(PLACEHOLDER.sub("<redacted>", raw).split())
-        if not line.startswith(("set ", "deactivate ")) or line.startswith("set version ") or SECRET_LINE.search(line) or line in seen:
+        if not line.startswith(("set ", "deactivate ")) or line.startswith("set version ") or (SECRET_LINE.search(line) and not ALGORITHM_LINE.match(line)) or line in seen:
             continue
         seen.add(line)
         lines.append(line)

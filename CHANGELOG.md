@@ -3,6 +3,7 @@
 ## Unreleased
 
 - bpcheckagent: a deactivated sub-statement of `then permit` no longer drops the permit from the derived key, and one deactivated member of a bracketed `match` list is honoured.
+- driftagent: SSH algorithm-name settings (`hostkey-algorithm`, `key-exchange`, `ciphers`, `macs`) are no longer dropped as key material, so a change to them is reported as drift.
 
 ## 0.0.2
 
