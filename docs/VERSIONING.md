@@ -16,5 +16,5 @@ New agents, new optional variables and tighter checks are minor; fixes and docs 
 
 ## Required mecbots
 
-mecagents 0.0.3 needs **mecbots 0.0.2 or later**. mecbots has the socbot escalation queue that
+mecagents 0.0.4 needs **mecbots 0.0.2 or later**. mecbots has the socbot escalation queue that
 `socagent` reads and a runner that scrubs Discord text and keeps full reports local.
