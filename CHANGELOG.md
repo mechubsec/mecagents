@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- bpcheckagent: a deactivated sub-statement of `then permit` no longer drops the permit from the derived key, and one deactivated member of a bracketed `match` list is honoured.
+
 ## 0.0.2
 
 Still alpha quality.

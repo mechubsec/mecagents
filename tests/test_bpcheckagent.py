@@ -317,6 +317,15 @@ def test_a_deactivated_dynamic_application_match_no_longer_narrows_the_policy():
     assert grading.derive_key(unlogged + "\ndeactivate security policies from-zone A to-zone B policy U2 then permit")["permits_without_log"] == []
 
 
+def test_deactivating_a_permit_sub_statement_or_a_list_member_is_not_the_whole_statement():
+    head = "set security policies from-zone A to-zone B policy P"
+    wide = make_config(policy("P"))
+    sub = wide + f"\n{head} then permit application-services idp\ndeactivate security policies from-zone A to-zone B policy P then permit application-services"
+    assert grading.derive_key(sub)["must_find"] == ["P"]  # the permit itself is still active
+    listed = make_config(policy("P", source="[ any LAN ]")) + "\ndeactivate security policies from-zone A to-zone B policy P match source-address any"
+    assert grading.derive_key(listed)["must_find"] == []  # `any` was the deactivated member; LAN narrows it
+
+
 def run_collect_grade(monkeypatch, packet, files=None, calls=GOOD_CALLS):
     """collect.run_agent_and_grade end to end with the model stubbed: (run, every saved copy of the state)."""
     monkeypatch.setattr(collect.agent, "preflight_offered_tools", lambda *a: list(BRIDGE))

@@ -42,8 +42,6 @@
 - **A commit just before the weekly run** starts the triggered run first; the weekly run then waits on the same
   state lock and may use up its time limit.
 - **Two commits in quick succession** can be reported under the older commit's note (device and user).
-- **`bpcheckagent`: a permit whose only sub-statement is deactivated** can be dropped from the derived key, and a
-  single deactivated member of a bracketed list is not handled.
 - **`driftagent` drops lines that name SSH key algorithms** as if they were key material, so a change to them is
   not reported as drift. It is also still graded from the model's prose, not from a findings list.
 - **`socagent`'s evidence window ends slightly before socbot's own queries ran**, so the alert that caused an

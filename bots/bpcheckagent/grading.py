@@ -9,8 +9,7 @@ Derived from the `set` lines of the security policies:
 - the missing-logging concept: required once if at least one permit policy has no `log` statement;
 - must_not_flag: a permit policy that is described, logged and narrow (no `any` in source, destination or application,
   and a concrete from/to zone). Conservative: a policy that fits neither list is simply not graded.
-Shortcut: only `set security policies ... policy <name> ...` lines are read (not default-policy, not bracketed lists,
-not order or shadowing); every policy name is matched by name alone, so equal names in two zone pairs count as one."""
+Shortcut: only `set security policies ... policy <name> ...` lines are read (not default-policy, not order or shadowing); every policy name is matched by name alone, so equal names in two zone pairs count as one."""
 
 import os
 import re
@@ -34,8 +33,8 @@ def parse_policies(config_text: str) -> dict[tuple[str, str], dict]:
     facts: source, destination, application, dynamic (sets of names), permit, log, described (bools), from, to (a zone or
     None) for the zones a policy applies to. A `deactivate security policies <path>` line switches off everything at or
     below its path: a whole policy (or zone pair, or all of them), or one statement such as `... policy P match
-    dynamic-application`, whose values then no longer narrow the policy. Shortcut: a single member of a bracketed list
-    cannot be deactivated here."""
+    dynamic-application`, whose values then no longer narrow the policy. A deeper path deactivates one
+    member of a `match` list, or a sub-statement of `then permit` (the permit stays)."""
     lines = [line.strip() for line in config_text.splitlines()]
     inactive = [(found.group(1) or "").replace('"', "").split() for found in map(DEACTIVATE_LINE.match, lines) if found]  # [] = every policy
     policies: dict[tuple[str, str], dict] = {}
@@ -44,13 +43,17 @@ def parse_policies(config_text: str) -> dict[tuple[str, str], dict]:
         if not found:
             continue
         from_zone, to_zone, name, rest = found.groups()
-        path = line.removeprefix("set security policies ").replace('"', "").split()
-        if any(path[:len(prefix)] == prefix for prefix in inactive):  # this statement is deactivated, or something above it is
+        path = line.removeprefix("set security policies ").replace("[", " ").replace("]", " ").replace('"', "").split()
+        words = rest.replace("[", " ").replace("]", " ").replace('"', "").split()
+        core_end = len(path) - len(words) + (2 if words[0] in ("match", "then") else 1)  # the statement itself: `match X`, `then X`, `description`
+        if any(path[:len(prefix)] == prefix and len(prefix) <= core_end for prefix in inactive):  # this statement is deactivated, or something above it is
             continue
+        members = {prefix[core_end] for prefix in inactive if len(prefix) == core_end + 1 and prefix[:core_end] == path[:core_end]}  # one deactivated list member
+        if words[:1] == ["match"]:
+            words = words[:2] + [word for word in words[2:] if word not in members]
         facts = policies.setdefault(("global" if not from_zone else f"{from_zone}>{to_zone}", name), {
             "source": set(), "destination": set(), "application": set(), "dynamic": set(), "permit": False, "log": False, "described": False,
             "from": from_zone, "to": to_zone})
-        words = rest.replace("[", " ").replace("]", " ").replace('"', "").split()
         if words[:2] == ["match", "source-address"]:
             facts["source"].update(words[2:])
         elif words[:2] == ["match", "destination-address"]:
