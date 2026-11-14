@@ -31,7 +31,7 @@ STATE = Path(os.environ.get("SOCAGENT_STATE", Path.home() / ".local/state/labbot
 QUEUE = Path(os.environ.get("SOCAGENT_QUEUE", Path.home() / ".local/state/labbots/socbot-escalations.json"))
 QUEUE_MAX_AGE = 20 * 3600
 MAX_ITEMS = 3
-QUERY_SLACK = 600  # socbot stamps the queue after its own `now-24h` queries ran: start this much earlier so their first minutes are covered
+QUERY_SLACK = 600  # only for a queue without `since` (mecbots before 0.0.3): a guess at how long socbot's queries took
 AGENT_TIMEOUT = 1200  # per item; plus one preflight (<=600 s): 3 items stay under LABBOTS_TIMEOUT in the systemd drop-in
 HERE = Path(__file__).resolve().parent
 DENY_ACTIONS = ("flow_session_deny", "flow_deny", "flow_drop")
@@ -59,12 +59,14 @@ def read_queue(path: Path, now: float):
     return items, ""
 
 
-def fetch_item_data(item: dict, at: float, call=None) -> tuple[set, int]:
+def fetch_item_data(item: dict, at: float, call=None, since: float | None = None) -> tuple[set, int]:
     """(values, rows): the lowercased identity values of the SSDF rows that concern the item, fetched with the agent's own
     token for the 24 h window socbot looked at (the 24 h ending at the queue's `at`, as absolute times, not "now": `until` where the
     tool takes it, else rows stamped after `at` are dropped);
-    `rows` counts the matching rows. `call(tool, arguments)` returns one raw reply."""
-    since, until = (datetime.fromtimestamp(moment, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") for moment in (at - 24 * 3600 - QUERY_SLACK, at))
+    `rows` counts the matching rows. `call(tool, arguments)` returns one raw reply. `since` is the queue's own window start;
+    without one (an older socbot) the window starts 24 h and QUERY_SLACK before `at`."""
+    start = at - 24 * 3600 - QUERY_SLACK if since is None else since
+    since, until = (datetime.fromtimestamp(moment, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") for moment in (start, at))
     call = call or (lambda tool, arguments: mcp_call_tools(SSDF_MCP, [(tool, arguments)])[0])
     kind, facts = item["kind"], item["facts"]
     if kind == "new-high-alert":
@@ -89,12 +91,12 @@ def build_prompt(item: dict) -> str:
     return (HERE / "prompt.md").read_text().strip().replace("<<ITEM>>", data)
 
 
-def investigate(item: dict, at: float) -> dict:
-    """One item end to end (`at` is the queue's timestamp): fetch its data, run the model, parse and verify its verdict, grade the run. Returns the
+def investigate(item: dict, at: float, since: float | None = None) -> dict:
+    """One item end to end (`at` and `since` are the queue's window): fetch its data, run the model, parse and verify its verdict, grade the run. Returns the
     item's record. An unreachable SSDF server is "could not run" (no model run); an aborted Hermes run is graded as a failure."""
     record = {**item, "outcome": "running"}
     try:
-        values, rows = fetch_item_data(item, at)
+        values, rows = fetch_item_data(item, at, since=since)
     except Exception as exc:
         return {**record, "outcome": "could not run", "reason": f"SSDF did not answer ({type(exc).__name__}: {str(exc)[:200]})"}
     record["evidence_rows"] = rows
@@ -123,12 +125,16 @@ def main() -> int:
             if not items:
                 run.update(outcome="nothing escalated", reason=reason)
                 return finish()
-            queued_at = json.loads(QUEUE.read_text())["at"]  # the window socbot looked at ends here
+            queue = json.loads(QUEUE.read_text())
+            queued_at = queue["at"]  # the window socbot looked at ends here
+            # and starts at `since`; anything else there (an older socbot wrote none) falls back to the padded guess
+            since = queue.get("since")
+            queued_since = since if isinstance(since, (int, float)) and not isinstance(since, bool) and since < queued_at else None
             run["tools_offered_preflight"] = agent.preflight_offered_tools(PROFILE, MODEL, SKILLS)
             save()
             for item in items:
                 try:
-                    run["items"].append(investigate(item, queued_at))
+                    run["items"].append(investigate(item, queued_at, queued_since))
                 except Exception as exc:  # one item failing says nothing about the others
                     run["items"].append({**item, "outcome": "could not run", "reason": f"{type(exc).__name__}: {str(exc)[:300]}"})
                 save()

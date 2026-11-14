@@ -24,7 +24,7 @@ this queue; see [VERSIONING](../VERSIONING.md).
 For each item code first fetches the item's own SSDF rows with its own token. Every entity the verdict cites is
 marked **seen** or **not seen** against the *identity* fields of those rows only (addresses, firewall or observer
 names, signature and rule names; exact, case-insensitive), so citing `high` or `true` supports nothing. The fetch uses
-the 24 h window that ended at the queue's `at` timestamp (absolute, started 10 minutes earlier to cover the time socbot's queries took), the window `socbot` looked at, not "the last 24 h": flows are
+the 24 h window that ended at the queue's `at` timestamp (absolute; it starts at the queue's `since`, where socbot's first query started, or 24 h and 10 minutes before `at` when an older socbot wrote no `since`), the window `socbot` looked at, not "the last 24 h": flows are
 asked for with `since` and `until`; `recent_alerts` takes no `until`, so alert rows stamped after `at` (or with no readable stamp)
 are dropped, and cannot support an entity socbot never saw.
 Evidence whose `tool` is not on the allow-list, or that the recorded session never called, counts for nothing. A verdict

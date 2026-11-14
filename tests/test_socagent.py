@@ -224,7 +224,7 @@ def test_every_allow_listed_tool_is_a_read_tool():
 # --- investigate -----------------------------------------------------------------------------------------
 
 def stub_investigate(monkeypatch, packet, status="ok", session="s1", fetch=None):
-    monkeypatch.setattr(collect, "fetch_item_data", fetch or (lambda item, at: ({"192.0.2.1", "bad-sig"}, 3)))
+    monkeypatch.setattr(collect, "fetch_item_data", fetch or (lambda item, at, since=None: ({"192.0.2.1", "bad-sig"}, 3)))
     monkeypatch.setattr(collect.agent, "run_hermes", lambda *args: {"status": status, "output": packet, "files": {}, "session_id": session, "seconds": 1})
     monkeypatch.setattr(collect.agent, "session_facts", lambda *args: {"tools_offered": sorted(BRIDGE), "calls": GOOD_CALLS})
 
@@ -244,7 +244,7 @@ def test_aborted_run_is_a_failed_run_and_missing_block_is_graded(monkeypatch):
 
 def test_unreachable_ssdf_is_could_not_run_and_no_model_runs(monkeypatch):
     no_model(monkeypatch)
-    monkeypatch.setattr(collect, "fetch_item_data", lambda item, at: (_ for _ in ()).throw(RuntimeError("refused")))
+    monkeypatch.setattr(collect, "fetch_item_data", lambda item, at, since=None: (_ for _ in ()).throw(RuntimeError("refused")))
     record = collect.investigate(ITEM, NOW)
     assert record["outcome"] == "could not run" and "SSDF did not answer" in record["reason"]
 
@@ -255,7 +255,7 @@ def test_main_investigates_every_queued_item_and_one_failure_does_not_stop_the_r
     monkeypatch.setattr(collect.agent, "preflight_offered_tools", lambda *args: sorted(BRIDGE))
     outcomes = iter([RuntimeError("hermes run did not start"), {"id": "2-new-high-alert", "outcome": "investigated"}])
 
-    def fake(item, at):
+    def fake(item, at, since=None):
         outcome = next(outcomes)
         if isinstance(outcome, Exception):
             raise outcome
@@ -346,6 +346,9 @@ def test_the_fetch_uses_the_absolute_window_socbot_looked_at_not_now():
     collect.fetch_item_data(ITEM, NOW, call)
     collect.fetch_item_data({"kind": "deny-spike", "facts": {}}, NOW, call)
     assert set(seen) == {"2027-01-14T07:50:00Z"} and len(seen) == len(collect.ALERT_PROVIDERS) + len(collect.DENY_ACTIONS)  # NOW - 24 h - QUERY_SLACK
+    seen.clear()
+    collect.fetch_item_data(ITEM, NOW, call, since=NOW - 24 * 3600 - 42)  # the queue's own start replaces the padded guess
+    assert set(seen) == {"2027-01-14T07:59:18Z"}
     assert collect.fetch_item_data({"kind": "firewall-quiet", "facts": {"firewall": "x"}}, NOW, lambda tool, arguments: {"firewalls": []}) == (set(), 0)
 
 
@@ -386,9 +389,23 @@ def test_main_passes_the_queues_timestamp_to_every_item(tmp_path, monkeypatch):
     monkeypatch.setattr(collect.time, "time", lambda: NOW + 6)
     monkeypatch.setattr(collect.agent, "preflight_offered_tools", lambda *args: sorted(BRIDGE))
     got = []
-    monkeypatch.setattr(collect, "investigate", lambda item, at: got.append(at) or {"id": item["id"], "outcome": "investigated"})
+    monkeypatch.setattr(collect, "investigate", lambda item, at, since=None: got.append((at, since)) or {"id": item["id"], "outcome": "investigated"})
     collect.main()
-    assert got == [NOW + 5] and run()["outcome"] == "investigated"
+    assert got == [(NOW + 5, None)] and run()["outcome"] == "investigated"  # no `since` in the queue: an older socbot
+
+
+def test_main_passes_the_queues_own_window_start_and_ignores_an_unusable_one(tmp_path, monkeypatch):
+    run = setup_main(monkeypatch, tmp_path, [ITEM])
+    monkeypatch.setattr(collect.time, "time", lambda: NOW + 6)
+    monkeypatch.setattr(collect.agent, "preflight_offered_tools", lambda *args: sorted(BRIDGE))
+    got = []
+    monkeypatch.setattr(collect, "investigate", lambda item, at, since=None: got.append(since) or {"id": item["id"], "outcome": "investigated"})
+    for since in (NOW - 86400, "yesterday", True, NOW + 99):  # the last three: not a number, a bool, not before `at`
+        path = tmp_path / "queue.json"
+        path.write_text(json.dumps({"at": NOW + 5, "since": since, "items": [ITEM]}))
+        monkeypatch.setattr(collect, "QUEUE", path)
+        collect.main()
+    assert got == [NOW - 86400, None, None, None] and run()["outcome"] == "investigated"
 
 
 # --- second review round ---------------------------------------------------------------------------------
