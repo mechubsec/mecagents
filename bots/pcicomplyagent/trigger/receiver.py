@@ -32,6 +32,7 @@ DEBOUNCE_SECONDS = 60
 
 _last_start = 0.0
 _deferred: dict | None = None  # the note of a commit notice waiting for both units to be idle
+_handoff = threading.Lock()  # a notice's start-or-defer decision and the waiter's check-and-start never interleave
 
 
 def source_ok(client_ip: str, allowed: str = ALLOWED_SOURCE) -> bool:
@@ -110,14 +111,16 @@ def wait_then_start() -> None:
     then on belongs to a new waiter, and this one never touches it again. A failed wait clears the deferral."""
     global _deferred
     try:
-        while unit_active(SCHEDULED_UNIT) or unit_active(UNIT) or time.time() - _last_start < DEBOUNCE_SECONDS:
+        while True:
+            with _handoff:  # checked and started in one step: a notice deciding at the same moment sees this run or goes first
+                if not (unit_active(SCHEDULED_UNIT) or unit_active(UNIT) or time.time() - _last_start < DEBOUNCE_SECONDS):
+                    log("units idle: starting the deferred run")
+                    note, _deferred = _deferred, None
+                    return start_run(note)
             time.sleep(POLL_SECONDS)
     except BaseException:
         _deferred = None
         raise
-    log("units idle: starting the deferred run")
-    note, _deferred = _deferred, None
-    start_run(note)
 
 
 def defer(note: dict) -> None:
@@ -159,12 +162,13 @@ class Handler(BaseHTTPRequestHandler):
         body = read_capped(self.rfile, self.headers.get("Content-Length"))
         if body is None:
             return self._reply(404)
-        verdict = should_start(time.time(), _last_start, unit_active(UNIT), scheduled=unit_active(SCHEDULED_UNIT))
-        log(f"commit notice from {client}: {defang(body)!r} -> {verdict}")
-        if verdict == "start":
-            start_run(parse_note(body, time.time()))
-        else:  # running, deferred or debounced: one more run once the units are idle
-            defer(parse_note(body, time.time()))
+        with _handoff:
+            verdict = should_start(time.time(), _last_start, unit_active(UNIT), scheduled=unit_active(SCHEDULED_UNIT))
+            log(f"commit notice from {client}: {defang(body)!r} -> {verdict}")
+            if verdict == "start":
+                start_run(parse_note(body, time.time()))
+            else:  # running, deferred or debounced: one more run once the units are idle
+                defer(parse_note(body, time.time()))
         self._reply(202)
 
 

@@ -94,3 +94,19 @@ def test_start_run_stamps_the_note_now_and_starts_the_unit(tmp_path, monkeypatch
     monkeypatch.setattr(receiver.subprocess, "run", lambda command, **kwargs: commands.append(command))
     receiver.start_run({"device": "d", "user": "u", "at": 1.0})
     assert commands[0][0] == "note" and commands[0][1]["at"] > 1.0 and commands[1] == ["systemctl", "--user", "start", "--no-block", receiver.UNIT]
+
+
+def test_the_start_or_defer_decision_and_the_waiters_start_both_hold_the_handoff_lock(monkeypatch):
+    held = []
+    monkeypatch.setattr(receiver, "unit_active", lambda unit: False)
+    monkeypatch.setattr(receiver, "_last_start", 0.0)
+    monkeypatch.setattr(receiver, "start_run", lambda note: held.append(receiver._handoff.locked()))
+    monkeypatch.setattr(receiver, "_deferred", {"user": "queued"})
+    receiver.wait_then_start()  # the waiter checks the units and starts in one locked step
+    monkeypatch.setattr(receiver, "source_ok", lambda client: True)
+    monkeypatch.setattr(receiver, "secret_ok", lambda presented, expected: True)
+    handler = receiver.Handler.__new__(receiver.Handler)
+    handler.client_address, handler.path, handler.headers = ("192.0.2.20", 0), "/commit", {"Content-Length": "2"}
+    handler.rfile, handler._reply = io.BytesIO(b"hi"), lambda code: None
+    handler.do_POST()  # and so does a notice that decides to start
+    assert held == [True, True] and not receiver._handoff.locked()
