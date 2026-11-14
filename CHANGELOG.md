@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.0.5
+
+Still alpha quality. Needs mecbots 0.0.2 or later; the exact socagent window needs mecbots 0.0.3.
 
 - pcicomplyagent trigger: a notice's start-or-defer decision and the waiter's check-and-start hold one lock, so a notice that arrives just as a deferred run starts still gets its own run.
 - socagent: the evidence window starts at the queue's `since` (written by socbot after mecbots 0.0.2) instead of a fixed 10 minutes before the 24 h; without `since` the padded window is still used, which can admit a few minutes socbot never queried.
