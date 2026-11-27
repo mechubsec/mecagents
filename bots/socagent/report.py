@@ -1,7 +1,8 @@
-"""socagent report (daily, 50 minutes after the collect): one block per item socbot escalated and the agent investigated. Posts nothing (an empty
-report) when nothing was escalated; otherwise socbot's own facts come first because they are certain, then the agent's
-verdict labelled as a local model's reading, its evidence with each cited entity marked seen or not seen in SSDF data
-code fetched independently, the next step, and the criteria that failed. There is no answer key, so correctness is
+"""socagent report (daily, 50 minutes after the collect): one block per item socbot escalated and the agent judged. Posts nothing (an empty
+report) when nothing was escalated; otherwise socbot's own facts come first because they are certain, then what code
+gathered, the model's verdict labelled as a local model's reading, a rules-raised final reading where the fixed rules
+floor overrode it, its evidence with each cited entity marked seen or not seen in SSDF data code fetched, the next
+step, and the criteria that failed. There is no answer key, so correctness is
 never graded, and nothing here ever tells the reader that something is safe. Model text is untrusted: defanged and
 capped, never interpreted. A problem notice is posted when the collect is missing, unfinished or could not run."""
 
@@ -35,19 +36,24 @@ def item_block(item: dict) -> list[str]:
     failed = [f"{name}" + (f" ({defang(detail, 60)})" if detail else "") for name, ok, detail in criteria if not ok]
     lines.append(f"{'🟢 PASS' if item.get('passed') else '🔴 FAIL'}: {sum(1 for _, ok, _ in criteria if ok)} of {len(criteria)} criteria"
                  + (f"; failed: {'; '.join(failed)}" if failed else ""))
-    names = sorted({call["tool"] for call in item.get("calls", [])})
-    lines.append(f"Tool calls: {len(item.get('calls', []))} ({defang(', '.join(names), 100)})")
+    calls = item.get("code_calls", [])
+    lines.append(f"Code gathered: {len(calls)} SSDF queries ({defang(', '.join(sorted({call['tool'] for call in calls})), 100)}), "
+                 f"{item.get('evidence_rows', 0)} matching rows; the model was offered no tools")
+    reading = item.get("reading") or {}
+    raised = (f"🔺 rules-raised to {READINGS.get(reading.get('final'), 'needs-human')}: {defang(reading.get('reason', ''), 200)}"
+              if reading.get("raised") else "")
     if verdict is None:
-        return lines + [f"⚠️ no valid verdict block ({defang(item.get('verdict_note') or 'not recorded', 80)}): no reading listed"]
+        return lines + [f"⚠️ no valid verdict ({defang(item.get('verdict_note') or 'not recorded', 80)}): no reading listed"] + ([raised] if raised else [])
     lines.append(f"Agent's reading: {READINGS[verdict['verdict']]}, confidence {verdict['confidence']} (a local model's, not a finding)")
+    if raised:
+        lines.append(raised)
     lines.append(defang(verdict["summary"], 400))
     if verdict["status"] == "unsupported":
         lines.append("⚠️ unsupported: none of the entities it cites appears in the SSDF data for this item")
-    lines.append(f"Evidence: {verdict['seen']} entities seen, {verdict['not_seen']} not seen (seen = found in data code fetched itself: {item.get('evidence_rows', 0)} matching rows)")
+    lines.append(f"Evidence: {verdict['seen']} entities seen, {verdict['not_seen']} not seen (seen = found in data code fetched itself)")
     for entry in verdict["evidence"][:SHOWN]:
         marks = ", ".join(f"{defang(entity['entity'], 80)} {'seen' if entity['seen'] else 'not seen'}" for entity in entry["entities"]) or "no entities cited"
-        marks += "" if entry.get("tool_ok", True) else " (tool not on the allow-list or never called: nothing counted)"
-        lines.append(f"- [{defang(entry['tool'], 40)}] {defang(entry['fact'], 250)} · {marks}")
+        lines.append(f"- {defang(entry['fact'], 250)} · {marks}")
     lines.append(f"Next step (the model's suggestion): {defang(verdict['next_step'], 200)}")
     return lines + ["No answer key: correctness of the reading is not graded."]
 
