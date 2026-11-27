@@ -7,9 +7,13 @@ an MCP server itself, so the risk is contained three ways, all here or in the ag
      tools the model was actually offered, and `assert_offered_tools` refuses a run that was offered more);
   3. deterministic code checks every finding against independently fetched evidence before anything is reported.
 
+socagent works the other way round: code gathers the data over its own read-only token and the model only judges,
+with no tools at all (`run_ollama_judge` refuses a request that offers any), answering in a JSON schema.
+
 Also here: the strict findings-block parser, the shared grading criteria (answer-key text scoring and tool-use
 safety), a recorded run in a state file (complete
-only at the very end), the Hermes one-shot runner with its session facts, and defanging of model text."""
+only at the very end), the Hermes one-shot runner with its session facts, the tool-free Ollama judge, and defanging
+of model text."""
 
 import contextlib
 import fcntl
@@ -21,6 +25,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 from mcp import mcp_endpoint
@@ -142,6 +147,37 @@ def preflight_offered_tools(profile: str, model: str, skills: str, runner=subpro
     offered = session_facts(profile, result["session_id"])["tools_offered"]
     assert_offered_tools(offered)
     return offered
+
+
+# --- tool-free judging (socagent) -------------------------------------------------------------------------
+
+# the same local Ollama the mecbots runner advises with (LABBOTS_OLLAMA_URL); never a cloud endpoint by default
+OLLAMA_URL = os.environ.get("LABBOTS_OLLAMA_URL", "http://127.0.0.1:11434")
+
+
+def offered_tools(body: dict) -> list:
+    """The tools an Ollama chat request offers the model: its `tools` list. A request without one offers nothing."""
+    return list(body.get("tools") or [])
+
+
+def run_ollama_judge(body: dict, timeout: int, url: str = OLLAMA_URL, opener=urllib.request.urlopen) -> dict:
+    """One non-streaming Ollama /api/chat call for a model that only judges. Refuses (ValueError, before anything is sent)
+    a request that offers any tool. Returns {status: ok|cut off|error ..., output, tool_calls, seconds}: `output` is the
+    reply text, `tool_calls` whatever tool calls the reply asked for anyway (none can run: nothing here executes them)."""
+    if offered_tools(body):
+        raise ValueError(f"request offers tools {offered_tools(body)}: a judge gets none")
+    started = time.time()
+    request = urllib.request.Request(f"{url.rstrip('/')}/api/chat", json.dumps({**body, "stream": False}).encode(), {"Content-Type": "application/json"})
+    try:
+        with opener(request, timeout=timeout) as response:
+            reply = json.loads(response.read())
+    except Exception as exc:  # unreachable, timed out, not JSON: graded as a run that did not finish
+        return {"status": f"error: {type(exc).__name__}: {str(exc)[:150]}", "output": "", "tool_calls": [], "seconds": round(time.time() - started)}
+    reply = reply if isinstance(reply, dict) else {}
+    message = reply.get("message") if isinstance(reply.get("message"), dict) else {}
+    status = "cut off (length)" if reply.get("done_reason") == "length" else "ok"
+    return {"status": status, "output": str(message.get("content") or ""), "tool_calls": list(message.get("tool_calls") or []),
+            "seconds": round(time.time() - started)}
 
 
 # --- recorded runs ---------------------------------------------------------------------------------------

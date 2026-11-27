@@ -34,7 +34,9 @@ Mint a token on your Junos MCP server that is limited **on the server** to:
 Use your server's own token tooling (for rust-junosmcp, its `token` command; check its help for scope options).
 One token per agent, so one can be revoked alone. Then test it: a write call (`load_and_commit_config`) and a call
 for another device must both be refused. Do not continue until they are. For socagent, mint an SSDF token scoped to
-the read tools listed in [socagent](agents/socagent.md), with no SQL and no re-identification.
+read tools only, with no SQL and no re-identification. Code calls four: `recent_alerts`, `query_flows`,
+`explain_access`, `ingest_status` ([socagent](agents/socagent.md)). Only the collector uses this token; socagent's
+model never gets it.
 
 ## 3. The labbots MCP entry
 
@@ -64,6 +66,10 @@ exist). Edit its `config.yaml`:
 
 Hermes then offers the model only its deferred-tool bridge for MCP: `tool_search`, `tool_describe`, `tool_call`.
 Skill reference files cannot be offered read-only, so the model works from each skill's main file only.
+
+**socagent is different.** Its model runs straight on Ollama (`SOCAGENT_OLLAMA_URL`, default `LABBOTS_OLLAMA_URL`)
+with no tools, so its profile needs no MCP server and no provider. The profile is only the Discord identity
+(step 5). Keep its toolsets emptied all the same.
 
 **Prove the offered tools.** Every collect does this itself: `preflight_offered_tools` runs a trivial one-shot as
 the profile, reads the tools Hermes offered from the profile's `state.db`, and refuses the run unless they are

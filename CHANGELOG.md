@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- socagent: code gathers, the model judges. Code runs a fixed, bounded set of SSDF queries per item kind (alerts or denied flows for socbot's window, `explain_access` for the busiest pairs, `ingest_status`) and writes a summary of at most 6000 characters, one line per entity. One local Ollama call with no tools and no MCP server judges it, in a JSON schema (structured output). Hermes no longer runs for socagent, and its preflight is gone: the request is checked for tools before it is sent.
+- socagent: new criteria (no tools offered, valid structured verdict, at least one cited entity seen) replace the tool-use criteria. Evidence entries no longer name a tool. A fixed rules floor raises a `benign` reading to `needs-human` (reported as rules-raised) for denies or alerts in the last hour, a critical alert, a firewall still quiet, or an unsupported or missing verdict.
+- socagent: new `SOCAGENT_OLLAMA_URL` and `SOCAGENT_NUM_CTX`; `SOCAGENT_PROFILE` is no longer read.
+- lib/agent.py: `run_ollama_judge` and `offered_tools` for a judge that gets no tools.
+
 ## 0.0.5
 
 Still alpha quality. Needs mecbots 0.0.2 or later; the exact socagent window needs mecbots 0.0.3.
